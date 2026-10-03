@@ -416,16 +416,17 @@ const WATERY = new Set(['water', 'bubble_column', 'kelp', 'kelp_plant', 'seagras
 const FULL = new Set(['full', 'fullchunk', 'postprocessed', 'features', 'initialize_light', 'light', 'spawn', 'heightmaps', 'decorated', 'lighted', 'mobs_spawned', 'finalized']);
 // Grass colour overrides by biome (grass blocks and plants on top only)
 const BIOME_GRASS = new Map([['dappled_forest', 0xc8782a]]);
+const SNOW_TOP = 0xf4f9fb;
 const GRASSY = new Set(['grass_block', 'short_grass', 'grass', 'tall_grass', 'fern', 'large_fern', 'bush']);
 const shortName = n => { const i = n.indexOf(':'); return i < 0 ? n : n.slice(i + 1); };
 
 class Palette {
-  constructor() { this.map = new Map(); this.names = []; this.kind = []; }
+  constructor() { this.map = new Map(); this.names = []; this.kind = []; this.snow = []; }
   id(name) {
     let i = this.map.get(name);
     if (i === undefined) {
       i = this.names.length; this.map.set(name, i); this.names.push(name);
-      const s = shortName(name); this.kind.push(AIR.has(s) ? 1 : WATERY.has(s) ? 2 : 0);
+      const s = shortName(name); this.kind.push(AIR.has(s) ? 1 : WATERY.has(s) ? 2 : 0); this.snow.push(s === 'snow');
     }
     return i;
   }
@@ -650,7 +651,7 @@ function processChunk(root, cx, cz, C) {
   const ceiling = nether ? 120 : 1e9;
   const phase = new Int8Array(256).fill(nether ? -1 : 0); // -1 under nether roof, 0 searching, 1 in water, 2 done
   const topY = new Int16Array(256), topId = new Uint16Array(256), wTop = new Int16Array(256), wDepth = new Uint8Array(256);
-  const fId = new Uint16Array(256).fill(NONE), tint = new Int32Array(256).fill(-1);
+  const fId = new Uint16Array(256).fill(NONE), tint = new Int32Array(256).fill(-1), snowAbove = new Uint8Array(256);
   let remaining = 256, prevY = null;
 
   for (const s of list) {
@@ -674,11 +675,12 @@ function processChunk(root, cx, cz, C) {
         if (pi >= n) continue;
         const k = kind[pi], ph = phase[c];
         if (ph === -1) { if (k === 1) phase[c] = 0; continue; }
-        if (k === 1) continue;
+        if (k === 1) { if (ph === 0) snowAbove[c] = C.rp.snow[ids[pi]] ? 1 : 0; continue; }
         if (ph === 0) {
           if (k === 2) { phase[c] = 1; wTop[c] = y; wDepth[c] = 1; topId[c] = ids[pi]; continue; }
           topY[c] = y; topId[c] = ids[pi]; phase[c] = 2; remaining--;
           if (biomeTint && GRASSY.has(shortName(C.rp.names[ids[pi]]))) tint[c] = biomeTint(c, ly);
+          if (snowAbove[c]) tint[c] = SNOW_TOP; // ground under a snow layer looks snowy
           break;
         }
         if (k === 2) { if (++wDepth[c] >= MAXD) { phase[c] = 2; remaining--; break; } continue; }
@@ -872,10 +874,13 @@ async function regionStacks(u8, dim) {
     let cur = -1, run = 0, n = 0;
     for (let y = f; y <= tp; y++) {
       let id = idAt(t, c, y);
+      let tint = -1;
       if (GRASSY.has(shortName(rp.names[id]))) {
-        const s = t.get(Math.floor(y / 16)), tint = s && s.tint ? s.tint(c, y - Math.floor(y / 16) * 16) : -1;
-        if (tint >= 0) id = rp.id(rp.names[id] + '@' + tint.toString(16).padStart(6, '0'));
+        const s = t.get(Math.floor(y / 16));
+        tint = s && s.tint ? s.tint(c, y - Math.floor(y / 16) * 16) : -1;
       }
+      if (K[id] === 1 && y < tp + 1 && rp.snow[idAt(t, c, y + 1)]) tint = SNOW_TOP;
+      if (tint >= 0) id = rp.id(rp.names[id] + '@' + tint.toString(16).padStart(6, '0'));
       if (id === cur && run < 65535) run++;
       else { if (run) { push(cur, run); n++; } cur = id; run = 1; }
     }
