@@ -410,7 +410,8 @@ function buildVoxelArrays(H, neighbour, sea) {
 <script id="worker-src" type="text/plain">
 // ---- Render worker: turns one .mca region file into a 512×512 top-down image ----
 const EMPTY = -32768, NONE = 0xFFFF, MAXD = 48;
-const AIR = new Set(['air', 'cave_air', 'void_air', 'barrier', 'light', 'structure_void']);
+// Treated as empty space everywhere. Snow layers are included so maps show the ground beneath them.
+const AIR = new Set(['air', 'cave_air', 'void_air', 'barrier', 'light', 'structure_void', 'snow']);
 const WATERY = new Set(['water', 'bubble_column', 'kelp', 'kelp_plant', 'seagrass', 'tall_seagrass']);
 const FULL = new Set(['full', 'fullchunk', 'postprocessed', 'features', 'initialize_light', 'light', 'spawn', 'heightmaps', 'decorated', 'lighted', 'mobs_spawned', 'finalized']);
 // Grass colour overrides by biome (grass blocks and plants on top only)
