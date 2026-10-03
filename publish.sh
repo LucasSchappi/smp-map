@@ -14,7 +14,8 @@ if [ -d "$REPO_DIR/.git" ]; then git -C "$REPO_DIR" fetch --quiet && git -C "$RE
 else git clone --quiet https://github.com/LucasSchappi/smp-map.git "$REPO_DIR"; fi
 cd "$REPO_DIR"
 
-node build-map.mjs "$SERVER"
+# Low priority, so a running Minecraft server always gets the CPU first
+nice -n 15 node build-map.mjs "$SERVER"
 
 git add -A map
 if git diff --cached --quiet; then echo "Map unchanged, nothing to publish."; exit 0; fi

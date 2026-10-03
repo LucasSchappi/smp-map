@@ -20,9 +20,9 @@ const core = html.match(/<script id="core">([\s\S]*?)<\/script>/)[1];
 const worker = html.match(/<script id="worker-src" type="text\/plain">([\s\S]*?)<\/script>/)[1];
 globalThis.self = {};
 // Decompress with Node's zlib rather than the browser's DecompressionStream, which older Node versions lack.
-const { renderRegion, NBT } = new Function('zlib', core + worker + `
+const { renderRegion, regionStacks, packStacks, NBT } = new Function('zlib', core + worker + `
 inflate = async (u8, format) => new Uint8Array(format === 'gzip' ? zlib.gunzipSync(u8) : zlib.inflateSync(u8));
-return { renderRegion, NBT };`)(zlib);
+return { renderRegion, regionStacks, packStacks, NBT };`)(zlib);
 
 // ---- Find the server's world and its dimensions ----
 const props = path.join(server, 'server.properties');
@@ -74,7 +74,7 @@ function blockData(res) {
 // ---- Render ----
 const out = path.join(here, 'map');
 fs.rmSync(out, { recursive: true, force: true });
-const manifest = { name: nameArg || data.LevelName || path.basename(path.resolve(server)), version: data.Version?.Name || null, generated: new Date().toISOString(), dims: [] };
+const manifest = { blocks: true, name: nameArg || data.LevelName || path.basename(path.resolve(server)), version: data.Version?.Name || null, generated: new Date().toISOString(), dims: [] };
 let totalBytes = 0;
 const problems = { errors: 0, legacy: 0, external: 0 };
 
@@ -88,13 +88,17 @@ for (const [key, label, kind, dirs] of candidates) {
   for (const [i, f] of files.entries()) {
     const [, rx, rz] = f.match(/^r\.(-?\d+)\.(-?\d+)\.mca$/).map(Number);
     process.stdout.write(`\r${label}: ${i + 1}/${files.length} regions`);
-    const res = await renderRegion(new Uint8Array(fs.readFileSync(path.join(dir, f))), kind);
+    const mca = new Uint8Array(fs.readFileSync(path.join(dir, f)));
+    const res = await renderRegion(mca, kind);
     for (const k in problems) problems[k] += res.stats[k] || 0;
     if (!res.stats.chunks) continue;
     const p = png(res.rgba, 512, 512), b = blockData(res);
+    // Every block from the surface down to the lowest nearby ground, for the 3D view
+    const v = zlib.gzipSync(packStacks(await regionStacks(mca, kind)), { level: 9 });
     fs.writeFileSync(path.join(out, key, `r.${rx}.${rz}.png`), p);
     fs.writeFileSync(path.join(out, key, `r.${rx}.${rz}.bin.gz`), b);
-    totalBytes += p.length + b.length;
+    fs.writeFileSync(path.join(out, key, `r.${rx}.${rz}.vox.gz`), v);
+    totalBytes += p.length + b.length + v.length;
     regions.push([rx, rz, res.stats.chunks]);
   }
   process.stdout.write('\n');

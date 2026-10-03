@@ -531,7 +531,11 @@ function resolveColor(n) {
 const COLOR_CACHE = new Map();
 function colorFor(full) {
   let c = COLOR_CACHE.get(full);
-  if (c === undefined) { c = resolveColor(shortName(full)); COLOR_CACHE.set(full, c); }
+  if (c === undefined) {
+    const at = full.indexOf('@'); // "@rrggbb" marks a biome-tinted block
+    c = at >= 0 ? parseInt(full.slice(at + 1), 16) : resolveColor(shortName(full));
+    COLOR_CACHE.set(full, c);
+  }
   return c;
 }
 
@@ -743,6 +747,284 @@ async function renderRegion(u8, dim) {
   return finish(C);
 }
 
+// ---- 3D block data: every block from the surface down to the lowest nearby ground ----
+const PLANTS = new Set(('short_grass grass tall_grass fern large_fern bush dead_bush firefly_bush short_dry_grass tall_dry_grass sugar_cane wheat carrots potatoes beetroots ' +
+  'melon_stem pumpkin_stem attached_melon_stem attached_pumpkin_stem torch wall_torch soul_torch soul_wall_torch redstone_torch redstone_wall_torch redstone_wire ' +
+  'rail powered_rail detector_rail activator_rail lever ladder cobweb vine glow_lichen sculk_vein hanging_roots spore_blossom cocoa sweet_berry_bush nether_sprouts ' +
+  'crimson_roots warped_roots crimson_fungus warped_fungus weeping_vines weeping_vines_plant twisting_vines twisting_vines_plant cave_vines cave_vines_plant ' +
+  'lily_pad sea_pickle tripwire tripwire_hook small_dripleaf big_dripleaf_stem pink_petals wildflowers leaf_litter brown_mushroom red_mushroom poppy dandelion ' +
+  'blue_orchid allium azure_bluet red_tulip orange_tulip white_tulip pink_tulip oxeye_daisy cornflower lily_of_the_valley wither_rose sunflower lilac rose_bush ' +
+  'peony torchflower torchflower_crop pitcher_plant pitcher_crop nether_wart frogspawn cactus_flower fire soul_fire end_rod lightning_rod chain iron_bars candle').split(' '));
+const PLANT_ENDS = ['_sapling', '_button', '_pressure_plate', '_sign', '_banner', '_carpet', '_candle', '_coral', '_coral_fan', '_head', '_skull', '_propagule'];
+// 0 air (not drawn, see-through), 1 solid, 2 water (see-through, drawn where it meets air), 3 thin plant/decoration (not drawn)
+const baseName = full => { const i = full.indexOf('@'); return i < 0 ? full : full.slice(0, i); };
+function blockKind(full) {
+  const n = shortName(baseName(full));
+  if (AIR.has(n)) return 0;
+  if (WATERY.has(n)) return 2;
+  if (PLANTS.has(n) || n.startsWith('potted_') || PLANT_ENDS.some(e => n.endsWith(e))) return 3;
+  return 1;
+}
+// Natural ground, used to decide how deep each column needs to be kept
+const isGround = (full, kind) => kind === 1 && !/leaves|_log$|_wood$|_stem$|hyphae|mushroom_block|bamboo|cactus/.test(full);
+const SIDE = new Map(Object.entries({
+  grass_block: 0x866043, podzol: 0x6a4a2a, mycelium: 0x7a6467, dirt_path: 0x86603f, farmland: 0x86603f, crimson_nylium: 0x6f3534, warped_nylium: 0x6f3534,
+  oak_log: 0x6b5130, spruce_log: 0x3b2a19, birch_log: 0xd8d5c8, jungle_log: 0x56451e, acacia_log: 0x67615a, dark_oak_log: 0x3c2e1b, mangrove_log: 0x544028,
+  cherry_log: 0x3a1f25, pale_oak_log: 0x5a5450, poplar_log: 0xb9b49e, crimson_stem: 0x5c1a2e, warped_stem: 0x3a3a4e,
+}).map(([k, v]) => ['minecraft:' + k, v]));
+function sideColorFor(full) {
+  full = baseName(full);
+  if (SIDE.has(full)) return SIDE.get(full);
+  if (/_log$|_stem$/.test(full) && !full.includes('mushroom')) return shade(colorFor(full), 0.62);
+  return colorFor(full);
+}
+
+async function regionStacks(u8, dim) {
+  const N = 512, rp = new Palette(), AIRID = rp.id('minecraft:air');
+  const nether = dim === 'nether', ceiling = nether ? 120 : 1e9;
+  const tables = new Array(1024);
+  const stats = { chunks: 0, errors: 0 };
+  if (u8.length >= 8192) {
+    const jobs = [];
+    for (let i = 0; i < 1024; i++) {
+      const off = ((u8[i * 4] << 16) | (u8[i * 4 + 1] << 8) | u8[i * 4 + 2]) * 4096;
+      if (!off || off + 5 > u8.length) continue;
+      const len = ((u8[off] << 24) >>> 0) + (u8[off + 1] << 16) + (u8[off + 2] << 8) + u8[off + 3];
+      if (len < 1 || off + 4 + len > u8.length) continue;
+      jobs.push(decodeChunk(u8.subarray(off + 5, off + 4 + len), u8[off + 4], stats).then(root => {
+        if (!root) return;
+        const level = root.Level || root;
+        if (typeof level.Status === 'string' && !FULL.has(shortName(level.Status))) return;
+        const secs = root.sections || level.Sections;
+        if (!Array.isArray(secs)) return;
+        const byY = new Map();
+        for (const s of secs) {
+          const bs = s.block_states || (s.Palette ? { palette: s.Palette, data: s.BlockStates } : null);
+          if (!bs || !Array.isArray(bs.palette) || !bs.palette.length) continue;
+          const ids = bs.palette.map(e => rp.id(String(typeof e === 'string' ? e : e.Name ?? e.id ?? e[''])));
+          const get = makeReader(bs.data, ids.length);
+          if (get) byY.set(s.Y, { ids, get, air: ids.length === 1 && ids[0] === AIRID, tint: sectionBiomeTints(s.biomes) });
+        }
+        if (byY.size) { tables[i] = byY; stats.chunks++; }
+      }).catch(() => { stats.errors++; }));
+    }
+    await Promise.all(jobs);
+  }
+  const kinds = () => rp.names.map(blockKind);
+  let K = kinds();
+  const top = new Int16Array(N * N).fill(EMPTY), ground = new Int16Array(N * N).fill(EMPTY);
+  const idAt = (t, c, y) => { const s = t.get(Math.floor(y / 16)); if (!s) return AIRID; const pi = s.get((y - Math.floor(y / 16) * 16) * 256 + c); return pi < s.ids.length ? s.ids[pi] : AIRID; };
+
+  // Pass 1: surface and ground height of every column
+  for (let ci = 0; ci < 1024; ci++) {
+    const t = tables[ci]; if (!t) continue;
+    const ys = [...t.keys()].sort((a, b) => b - a);
+    const cx = ci & 31, cz = ci >> 5;
+    if (K.length !== rp.names.length) K = kinds();
+    for (let c = 0; c < 256; c++) {
+      const idx = (cz * 16 + (c >> 4)) * N + cx * 16 + (c & 15);
+      let underRoof = nether, found = false, prevY = null;
+      for (const sy of ys) {
+        const s = t.get(sy);
+        if (prevY !== null && prevY - sy > 1) underRoof = false; // missing sections are air
+        prevY = sy;
+        if (s.air) { underRoof = false; continue; }
+        for (let ly = 15; ly >= 0; ly--) {
+          const y = sy * 16 + ly;
+          if (y > ceiling) continue;
+          const pi = s.get(ly * 256 + c), id = pi < s.ids.length ? s.ids[pi] : AIRID, k = K[id];
+          if (underRoof) { if (k === 0) underRoof = false; continue; }
+          if (k === 0) continue;
+          if (top[idx] === EMPTY) top[idx] = y;
+          if (isGround(rp.names[id], k)) { ground[idx] = y; found = true; break; }
+        }
+        if (found) break;
+      }
+      if (top[idx] !== EMPTY && ground[idx] === EMPTY) ground[idx] = Math.max(top[idx] - 32, ys[ys.length - 1] * 16);
+    }
+  }
+
+  // Pass 2: keep blocks from the lowest neighbouring ground up to the surface, run-length encoded
+  K = kinds();
+  const floor = new Int16Array(N * N), counts = new Uint16Array(N * N);
+  let cap = 1 << 18, nr = 0, rid = new Uint16Array(cap), rlen = new Uint16Array(cap);
+  const push = (id, l) => {
+    if (nr === cap) { cap *= 2; const a = new Uint16Array(cap); a.set(rid); rid = a; const b = new Uint16Array(cap); b.set(rlen); rlen = b; }
+    rid[nr] = id; rlen[nr] = l; nr++;
+  };
+  for (let z = 0; z < N; z++) for (let x = 0; x < N; x++) {
+    const idx = z * N + x, tp = top[idx];
+    if (tp === EMPTY) continue;
+    let f = ground[idx];
+    for (let dz = -1; dz <= 1; dz++) for (let dx = -1; dx <= 1; dx++) {
+      const xx = x + dx, zz = z + dz;
+      if (xx < 0 || zz < 0 || xx >= N || zz >= N) continue;
+      const g = ground[zz * N + xx];
+      if (g !== EMPTY && g < f) f = g;
+    }
+    f = Math.max(f - 1, ground[idx] - 64);
+    const t = tables[(z >> 4) * 32 + (x >> 4)], c = (z & 15) * 16 + (x & 15);
+    // Under overhangs and cave mouths, keep going down until there's something solid to stand on,
+    // otherwise the gap below would be treated as rock and show up as a hole
+    for (let lim = f - 48; f > lim && K[idAt(t, c, f)] !== 1; ) f--;
+    floor[idx] = f;
+    let cur = -1, run = 0, n = 0;
+    for (let y = f; y <= tp; y++) {
+      let id = idAt(t, c, y);
+      if (GRASSY.has(shortName(rp.names[id]))) {
+        const s = t.get(Math.floor(y / 16)), tint = s && s.tint ? s.tint(c, y - Math.floor(y / 16) * 16) : -1;
+        if (tint >= 0) id = rp.id(rp.names[id] + '@' + tint.toString(16).padStart(6, '0'));
+      }
+      if (id === cur && run < 65535) run++;
+      else { if (run) { push(cur, run); n++; } cur = id; run = 1; }
+    }
+    push(cur, run); n++;
+    counts[idx] = n;
+  }
+  return { palette: rp.names, floor, counts, ids: rid.slice(0, nr), lens: rlen.slice(0, nr), stats };
+}
+
+// Block-accurate mesh from column stacks. Faces are drawn only where a block meets air (or water),
+// and neighbouring faces of the same block are merged into larger rectangles.
+function meshStacks(st, edges, sea) {
+  const N = 512, { palette, floor, counts, ids, lens } = st;
+  const kind = Uint8Array.from(palette, blockKind);
+  const lin = c => [16, 8, 0].reduce((acc, sh) => acc | (Math.round(Math.pow(((c >> sh) & 255) / 255, 2.2) * 255) << sh), 0);
+  const topC = palette.map(n => lin(colorFor(n))), sideC = palette.map(n => lin(sideColorFor(n)));
+  const start = new Uint32Array(N * N), top = new Int16Array(N * N).fill(EMPTY);
+  let total = 0, r = 0;
+  for (let c = 0; c < N * N; c++) {
+    let h = 0; for (let k = 0; k < counts[c]; k++) h += lens[r + k];
+    start[c] = total; total += h; r += counts[c];
+    if (counts[c]) top[c] = floor[c] + h - 1;
+  }
+  const vol = new Uint16Array(total);
+  r = 0;
+  for (let c = 0; c < N * N; c++) { let o = start[c]; for (let k = 0; k < counts[c]; k++, r++) { vol.fill(ids[r], o, o + lens[r]); o += lens[r]; } }
+  const edgeTop = (x, z) => { const a = x < 0 ? edges.w : x >= N ? edges.e : z < 0 ? edges.n : edges.s; if (!a) return EMPTY; return a[x < 0 || x >= N ? z : x]; };
+  const kindAt = (x, y, z) => {
+    if (x < 0 || z < 0 || x >= N || z >= N) { const t = edgeTop(x, z); return t === EMPTY || y > t ? 0 : 1; }
+    const c = z * N + x;
+    if (!counts[c] || y > top[c]) return 0;
+    if (y < floor[c]) return 1;
+    return kind[vol[start[c] + y - floor[c]]];
+  };
+
+  // Faces per direction as sortable keys: row, plane, position along the row, block id
+  const DIRS = [[0, 1, 0], [0, -1, 0], [1, 0, 0], [-1, 0, 0], [0, 0, 1], [0, 0, -1]];
+  const keys = DIRS.map(() => ({ a: new Float64Array(1 << 16), n: 0 }));
+  const add = (d, row, plane, pos, id) => {
+    const b = keys[d]; if (b.n === b.a.length) { const a = new Float64Array(b.n * 2); a.set(b.a); b.a = a; }
+    b.a[b.n++] = ((row * 1024 + plane) * 512 + pos) * 65536 + id;
+  };
+  const emit = (d, x, y, z, id) => {
+    if (d < 2) add(d, z, y + 512 + (d === 0 ? 1 : 0), x, id);
+    else if (d < 4) add(d, y + 512, x + (d === 2 ? 1 : 0), z, id);
+    else add(d, y + 512, z + (d === 4 ? 1 : 0), x, id);
+  };
+  for (let z = 0; z < N; z++) for (let x = 0; x < N; x++) {
+    const c = z * N + x; if (!counts[c]) continue;
+    for (let y = floor[c]; y <= top[c]; y++) {
+      const id = vol[start[c] + y - floor[c]], k = kind[id];
+      if (k === 0 || k === 3 || k === 2) {
+        // An open cell next to ground below a column's kept range (assumed rock): draw that rock's face,
+        // coloured like the lowest kept block of its column, so cave mouths don't show the sky through them
+        for (let d = 0; d < 6; d++) {
+          const [dx, dy, dz] = DIRS[d], nx = x + dx, ny = y + dy, nz = z + dz;
+          if (nx < 0 || nz < 0 || nx >= N || nz >= N) continue;
+          const nc = nz * N + nx;
+          if (!counts[nc] || ny >= floor[nc]) continue;
+          emit(d ^ 1, nx, ny, nz, vol[start[nc]]);
+        }
+        if (k !== 2) continue;
+      }
+      for (let d = 0; d < 6; d++) {
+        const [dx, dy, dz] = DIRS[d], nk = kindAt(x + dx, y + dy, z + dz);
+        if (k === 1 ? nk === 1 : (nk === 1 || nk === 2)) continue;
+        emit(d, x, y, z, id);
+      }
+    }
+  }
+
+  const out = [0, 1].map(() => ({ cap: 1 << 15, n: 0, ni: 0, pos: null, nor: null, col: null, idx: null }));
+  for (const o of out) { o.pos = new Float32Array(o.cap * 3); o.nor = new Int8Array(o.cap * 3); o.col = new Uint8Array(o.cap * 3); o.idx = new Uint32Array(o.cap * 1.5); }
+  const grow = o => {
+    o.cap *= 2;
+    const P = new Float32Array(o.cap * 3); P.set(o.pos); o.pos = P;
+    const Q = new Int8Array(o.cap * 3); Q.set(o.nor); o.nor = Q;
+    const C = new Uint8Array(o.cap * 3); C.set(o.col); o.col = C;
+    const I = new Uint32Array(o.cap * 1.5); I.set(o.idx); o.idx = I;
+  };
+  const toXYZ = (d, row, plane, pos) => d < 2 ? [pos, plane - 512 - sea, row] : d < 4 ? [plane, row - 512 - sea, pos] : [pos, row - 512 - sea, plane];
+  function quad(d, row0, row1, plane, pos0, pos1, id) {
+    const o = out[kind[id] === 2 ? 1 : 0];
+    if (o.n + 4 > o.cap) grow(o);
+    let v = [toXYZ(d, row0, plane, pos0), toXYZ(d, row1, plane, pos0), toXYZ(d, row1, plane, pos1), toXYZ(d, row0, plane, pos1)];
+    const [nx, ny, nz] = DIRS[d];
+    const ux = v[1][0] - v[0][0], uy = v[1][1] - v[0][1], uz = v[1][2] - v[0][2], wx = v[2][0] - v[0][0], wy = v[2][1] - v[0][1], wz = v[2][2] - v[0][2];
+    if ((uy * wz - uz * wy) * nx + (uz * wx - ux * wz) * ny + (ux * wy - uy * wx) * nz < 0) v = [v[0], v[3], v[2], v[1]];
+    const col = d === 0 ? topC[id] : sideC[id];
+    for (let k = 0; k < 4; k++) {
+      const i = o.n + k;
+      o.pos[i * 3] = v[k][0]; o.pos[i * 3 + 1] = v[k][1]; o.pos[i * 3 + 2] = v[k][2];
+      o.nor[i * 3] = nx * 127; o.nor[i * 3 + 1] = ny * 127; o.nor[i * 3 + 2] = nz * 127;
+      o.col[i * 3] = (col >> 16) & 255; o.col[i * 3 + 1] = (col >> 8) & 255; o.col[i * 3 + 2] = col & 255;
+    }
+    const n = o.n;
+    o.idx[o.ni++] = n; o.idx[o.ni++] = n + 1; o.idx[o.ni++] = n + 2; o.idx[o.ni++] = n; o.idx[o.ni++] = n + 2; o.idx[o.ni++] = n + 3;
+    o.n += 4;
+  }
+  // Merge: runs along each row, then identical runs on consecutive rows
+  for (let d = 0; d < 6; d++) {
+    const a = keys[d].a.subarray(0, keys[d].n).sort();
+    let open = new Map(), next = new Map(), row = -1;
+    const finishRow = () => { for (const q of open.values()) quad(d, q.r0, q.r1, q.plane, q.p0, q.p1, q.id); open = next; next = new Map(); };
+    let i = 0;
+    while (i < a.length) {
+      const k0 = a[i], id = k0 % 65536, rest = (k0 - id) / 65536, pos = rest % 512, rest2 = (rest - pos) / 512, plane = rest2 % 1024, rw = (rest2 - plane) / 1024;
+      if (rw !== row) {
+        if (rw !== row + 1) { finishRow(); }
+        finishRow(); row = rw;
+      }
+      // extend along the row while position is consecutive and plane and block match
+      let p1 = pos + 1, j = i + 1;
+      while (j < a.length) {
+        const kj = a[j], idj = kj % 65536, rj = (kj - idj) / 65536, pj = rj % 512, r2 = (rj - pj) / 512;
+        if (idj !== id || pj !== p1 || r2 !== rest2) break;
+        p1++; j++;
+      }
+      const runKey = ((plane * 512 + pos) * 513 + p1) * 65536 + id;
+      const prev = open.get(runKey);
+      if (prev) { prev.r1 = rw + 1; open.delete(runKey); next.set(runKey, prev); }
+      else next.set(runKey, { r0: rw, r1: rw + 1, plane, p0: pos, p1, id });
+      i = j;
+    }
+    finishRow(); finishRow();
+  }
+  const pack = o => ({ position: o.pos.slice(0, o.n * 3), normal: o.nor.slice(0, o.n * 3), color: o.col.slice(0, o.n * 3), index: o.idx.slice(0, o.ni) });
+  return { solid: pack(out[0]), water: pack(out[1]), quads: (out[0].n + out[1].n) / 4 };
+}
+
+// Stacks <-> bytes, for the published map's .vox.gz files
+function packStacks(st) {
+  const pal = new TextEncoder().encode(JSON.stringify(st.palette));
+  const N = 512 * 512, total = 12 + pal.length + N * 4 + st.ids.length * 4;
+  const buf = new ArrayBuffer(total + 4), dv = new DataView(buf), u8 = new Uint8Array(buf);
+  u8.set([83, 77, 80, 86]); dv.setUint32(4, pal.length, true); dv.setUint32(8, st.ids.length, true);
+  let o = 12; u8.set(pal, o); o += pal.length;
+  const put = a => { u8.set(new Uint8Array(a.buffer, a.byteOffset, a.byteLength), o); o += a.byteLength; };
+  put(st.floor); put(st.counts); put(st.ids); put(st.lens);
+  return u8.subarray(0, o);
+}
+function unpackStacks(u8) {
+  const dv = new DataView(u8.buffer, u8.byteOffset, u8.byteLength), N = 512 * 512;
+  const plen = dv.getUint32(4, true), nr = dv.getUint32(8, true);
+  let o = 12;
+  const palette = JSON.parse(new TextDecoder().decode(u8.subarray(o, o + plen))); o += plen;
+  const take = (T, n) => { const a = new T(Uint8Array.prototype.slice.call(u8, o, o + n * T.BYTES_PER_ELEMENT).buffer); o += n * T.BYTES_PER_ELEMENT; return a; };
+  return { palette, floor: take(Int16Array, N), counts: take(Uint16Array, N), ids: take(Uint16Array, nr), lens: take(Uint16Array, nr) };
+}
+
 // ---- Sample terrain, used for the preview before a world is loaded ----
 function hash2(x, z, s) { let h = (Math.imul(x, 374761393) + Math.imul(z, 668265263) + Math.imul(s, 1442695041)) | 0; h = Math.imul(h ^ (h >>> 13), 1274126177); return ((h ^ (h >>> 16)) >>> 0) / 4294967296; }
 function vnoise(x, z, s) {
@@ -816,6 +1098,14 @@ function renderSample(rx, rz) {
 self.onmessage = async (e) => {
   const m = e.data;
   try {
+    if (m.type === 'blocks') {
+      // Block-accurate 3D mesh, from the region file itself or from published stack data
+      const st = m.buffer ? await regionStacks(new Uint8Array(m.buffer), m.dim) : unpackStacks(new Uint8Array(m.stacks));
+      const g = meshStacks(st, m.edges, m.sea), parts = [g.solid, g.water];
+      const transfer = parts.flatMap(p => [p.position.buffer, p.normal.buffer, p.color.buffer, p.index.buffer]);
+      self.postMessage({ id: m.id, ok: true, solid: g.solid, water: g.water }, transfer);
+      return;
+    }
     if (m.type === 'voxel') {
       const E = m.edges; // heights just outside the region: west (x=-1), east (x=512), north (z=-1), south (z=512)
       const nb = (x, z) => { const a = x < 0 ? E.w : x >= 512 ? E.e : z < 0 ? E.n : E.s; return a ? a[x < 0 || x >= 512 ? z : x] : null; };
@@ -922,6 +1212,7 @@ function addRegion(d, f, res) {
   const sm = document.createElement('canvas'); sm.width = sm.height = 64;
   const sx = sm.getContext('2d'); sx.imageSmoothingQuality = 'high'; sx.drawImage(c, 0, 0, 64, 64);
   const region = { rx: f.rx, rz: f.rz, canvas: c, small: sm, blocks: res.blocks, heights: res.heights, depth: res.depth, palette: res.palette };
+  region.src = f;
   d.regions.set(f.rx + ',' + f.rz, region);
   View3D.addRegion(d, region);
 }
@@ -1403,7 +1694,7 @@ $('#btn-export').onclick = () => {
 const View3D = (() => {
   const GRID = 128, STEP = 512 / GRID, SEA = 62;
   const el = $('#map3d');
-  const MAX_BLOCKY = 9; // regions drawn as real blocks at once, nearest the camera first
+  const MAX_BLOCKY = 5; // regions drawn as real blocks at once, nearest the camera first
   let renderer, scene, camera, controls, terrain, spawnMark, light, dim = null, active = false, frame = 0, queued = false, exag = 1, gen = 0, lodTimer = 0;
   const meshes = new Map(); // "rx,rz" → { r, mat, smooth, blocky, building, want }
 
@@ -1488,10 +1779,23 @@ const View3D = (() => {
       w: edgeStrip(r.rx - 1, r.rz, z => z * 512 + 511), e: edgeStrip(r.rx + 1, r.rz, z => z * 512),
       n: edgeStrip(r.rx, r.rz - 1, x => 511 * 512 + x), s: edgeStrip(r.rx, r.rz + 1, x => x),
     };
-    const heights = r.heights.slice();
-    pool.run(async () => ({ msg: { type: 'voxel', heights, edges, sea: SEA }, transfer: [heights.buffer] })).then(res => {
+    const src = r.src || {}, kindOfDim = dim.kind;
+    pool.run(async () => {
+      if (src.entry) { // a world loaded in this tab: read the region file again for full block data
+        const buffer = await src.entry.read();
+        return { msg: { type: 'blocks', buffer, dim: kindOfDim, edges, sea: SEA }, transfer: [buffer] };
+      }
+      if (src.url && S.published && S.published.blocks) { // published map: per-region block data
+        let u8 = new Uint8Array(await (await fetchOk(src.url + '.vox.gz')).arrayBuffer());
+        if (u8[0] === 0x1f && u8[1] === 0x8b) u8 = await inflate(u8, 'gzip');
+        return { msg: { type: 'blocks', stacks: u8.buffer, edges, sea: SEA }, transfer: [u8.buffer] };
+      }
+      const heights = r.heights.slice();
+      return { msg: { type: 'voxel', heights, edges, sea: SEA }, transfer: [heights.buffer] };
+    }).then(res => {
       e.building = false;
       if (myGen !== gen || !meshes.has(r.rx + ',' + r.rz)) return;
+      if (res.solid) { addBlockMeshes(e, res); return; }
       const g = new THREE.BufferGeometry();
       // Free the copies in page memory once they're on the graphics card
       const free = function () { this.array = null; };
@@ -1509,9 +1813,33 @@ const View3D = (() => {
       updateLOD();
     }, () => { e.building = false; });
   }
+  let blockMat, waterMat;
+  function geometryFrom(p) {
+    const g = new THREE.BufferGeometry(), free = function () { this.array = null; };
+    g.setAttribute('position', new THREE.BufferAttribute(p.position, 3));
+    g.setAttribute('normal', new THREE.BufferAttribute(p.normal, 3, true).onUpload(free));
+    g.setAttribute('color', new THREE.BufferAttribute(p.color, 3, true).onUpload(free));
+    g.setIndex(new THREE.BufferAttribute(p.index, 1).onUpload(free));
+    g.computeBoundingSphere();
+    g.attributes.position.onUpload(free);
+    return g;
+  }
+  function addBlockMeshes(e, res) {
+    blockMat = blockMat || new THREE.MeshLambertMaterial({ vertexColors: true });
+    waterMat = waterMat || new THREE.MeshLambertMaterial({ vertexColors: true, transparent: true, opacity: 0.62, depthWrite: false });
+    const group = new THREE.Group();
+    if (res.solid.index.length) group.add(new THREE.Mesh(geometryFrom(res.solid), blockMat));
+    if (res.water.index.length) { const w = new THREE.Mesh(geometryFrom(res.water), waterMat); w.renderOrder = 1; group.add(w); }
+    group.position.set(e.r.rx * 512, 0, e.r.rz * 512);
+    e.blocky = group;
+    terrain.add(group);
+    applyLOD(e); render(); updateLOD();
+  }
   function dropBlocky(e) {
     if (!e.blocky) return;
-    terrain.remove(e.blocky); e.blocky.geometry.dispose(); e.blocky = null;
+    terrain.remove(e.blocky);
+    e.blocky.traverse(o => { if (o.geometry) o.geometry.dispose(); });
+    e.blocky = null;
   }
   function applyLOD(e) {
     if (e.blocky) e.blocky.visible = e.want;
@@ -1521,7 +1849,7 @@ const View3D = (() => {
   function updateLOD() {
     if (!active || !dim) return;
     const t = controls.target, dist = camera.position.distanceTo(t);
-    const reach = dist < 1800 ? Math.min(1100, Math.max(500, dist * 0.9)) : 0;
+    const reach = dist < 1500 ? Math.min(800, Math.max(400, dist * 0.8)) : 0;
     const list = [...meshes.values()].map(e => ({ e, d: Math.hypot(e.r.rx * 512 + 256 - t.x, e.r.rz * 512 + 256 - t.z) })).sort((a, b) => a.d - b.d);
     list.forEach(({ e, d }, i) => { e.want = i < MAX_BLOCKY && d < reach + 362; applyLOD(e); });
     // One build at a time, nearest first, so the closest ground turns blocky soonest
