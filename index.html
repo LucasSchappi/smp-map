@@ -200,7 +200,7 @@ button { cursor: pointer; }
     <div class="bottom">
       <div class="panel3d float" id="panel3d" hidden>
         <div class="hint">Drag to move · <kbd>Shift</kbd>-drag or right-drag to tilt and turn · Scroll to zoom. On touch, use two fingers to tilt.</div>
-        <label class="exag" for="exag">Height <input type="range" id="exag" min="1" max="4" step="0.1" value="1.6"><span id="exag-val">×1.6</span></label>
+        <label class="exag" for="exag">Height <input type="range" id="exag" min="1" max="4" step="0.1" value="1"><span id="exag-val">×1.0</span></label>
       </div>
       <div class="readout float" aria-live="off">
         <div class="coords">
@@ -317,6 +317,93 @@ const NBT = (() => {
 async function inflate(u8, format) {
   const stream = new Blob([u8]).stream().pipeThrough(new DecompressionStream(format));
   return new Uint8Array(await new Response(stream).arrayBuffer());
+}
+</script>
+
+<script id="voxel">
+// Builds block-accurate geometry for one 512×512 region from its surface heights.
+// Tops of equal height are merged into rectangles; side walls appear wherever the ground steps down.
+// neighbour(x, z) gives heights just outside the region (x or z of -1 or 512), or null if unknown.
+function buildVoxelArrays(H, neighbour, sea) {
+  const N = 512, EMPTY = -32768, EDGE = sea - 12;
+  let cap = 1 << 16, n = 0; // vertex count
+  let pos = new Float32Array(cap * 3), nor = new Float32Array(cap * 3), uv = new Float32Array(cap * 2);
+  let idx = new Uint32Array(cap * 1.5), ni = 0;
+  function grow() {
+    cap *= 2;
+    const p2 = new Float32Array(cap * 3); p2.set(pos); pos = p2;
+    const n2 = new Float32Array(cap * 3); n2.set(nor); nor = n2;
+    const u2 = new Float32Array(cap * 2); u2.set(uv); uv = u2;
+    const i2 = new Uint32Array(cap * 1.5); i2.set(idx); idx = i2;
+  }
+  // Four corners in order, so (p1 - p0) × (p2 - p0) points out of the face
+  function quad(c, nx, ny, nz) {
+    if (n + 4 > cap) grow();
+    for (let k = 0; k < 4; k++) {
+      const v = n + k;
+      pos[v * 3] = c[k * 5]; pos[v * 3 + 1] = c[k * 5 + 1]; pos[v * 3 + 2] = c[k * 5 + 2];
+      nor[v * 3] = nx; nor[v * 3 + 1] = ny; nor[v * 3 + 2] = nz;
+      uv[v * 2] = c[k * 5 + 3]; uv[v * 2 + 1] = c[k * 5 + 4];
+    }
+    idx[ni++] = n; idx[ni++] = n + 1; idx[ni++] = n + 2; idx[ni++] = n; idx[ni++] = n + 2; idx[ni++] = n + 3;
+    n += 4;
+  }
+  const U = x => x / N, V = z => 1 - z / N;
+
+  // Top faces, greedy-merged
+  const done = new Uint8Array(N * N);
+  for (let z = 0; z < N; z++) for (let x = 0; x < N; x++) {
+    const i = z * N + x, h = H[i];
+    if (done[i] || h === EMPTY) continue;
+    let w = 1; while (x + w < N && !done[i + w] && H[i + w] === h) w++;
+    let d = 1;
+    grow: while (z + d < N) { for (let k = 0; k < w; k++) { const j = (z + d) * N + x + k; if (done[j] || H[j] !== h) break grow; } d++; }
+    for (let r = 0; r < d; r++) done.fill(1, (z + r) * N + x, (z + r) * N + x + w);
+    const y = h + 1 - sea, x1 = x + w, z1 = z + d;
+    quad([x, y, z, U(x), V(z), x, y, z1, U(x), V(z1), x1, y, z1, U(x1), V(z1), x1, y, z, U(x1), V(z)], 0, 1, 0);
+  }
+
+  // Height of the ground a wall drops down to
+  const below = (h, nh) => (nh === null || nh === EMPTY) ? (h > EDGE ? EDGE : h - 4) : nh;
+  const at = (x, z) => (x < 0 || z < 0 || x >= N || z >= N) ? neighbour(x, z) : H[z * N + x];
+
+  // Walls facing ±x: walk down each column of cells, merging runs with the same top and bottom
+  for (const dx of [1, -1]) for (let x = 0; x < N; x++) {
+    let start = -1, kh = 0, kb = 0;
+    const u = (x + 0.5) / N, wx = dx > 0 ? x + 1 : x;
+    const flush = z1 => {
+      if (start < 0) return;
+      const yt = kh + 1 - sea, yb = kb + 1 - sea, z0 = start;
+      if (dx > 0) quad([wx, yb, z0, u, V(z0), wx, yt, z0, u, V(z0), wx, yt, z1, u, V(z1), wx, yb, z1, u, V(z1)], 1, 0, 0);
+      else quad([wx, yb, z1, u, V(z1), wx, yt, z1, u, V(z1), wx, yt, z0, u, V(z0), wx, yb, z0, u, V(z0)], -1, 0, 0);
+      start = -1;
+    };
+    for (let z = 0; z <= N; z++) {
+      let h = EMPTY, b = 0;
+      if (z < N) { h = H[z * N + x]; if (h !== EMPTY) { b = below(h, at(x + dx, z)); if (b >= h) h = EMPTY; } }
+      if (start >= 0 && (h !== kh || b !== kb)) flush(z);
+      if (h !== EMPTY && start < 0) { start = z; kh = h; kb = b; }
+    }
+  }
+  // Walls facing ±z: walk along each row
+  for (const dz of [1, -1]) for (let z = 0; z < N; z++) {
+    let start = -1, kh = 0, kb = 0;
+    const v = 1 - (z + 0.5) / N, wz = dz > 0 ? z + 1 : z;
+    const flush = x1 => {
+      if (start < 0) return;
+      const yt = kh + 1 - sea, yb = kb + 1 - sea, x0 = start;
+      if (dz > 0) quad([x1, yb, wz, U(x1), v, x1, yt, wz, U(x1), v, x0, yt, wz, U(x0), v, x0, yb, wz, U(x0), v], 0, 0, 1);
+      else quad([x0, yb, wz, U(x0), v, x0, yt, wz, U(x0), v, x1, yt, wz, U(x1), v, x1, yb, wz, U(x1), v], 0, 0, -1);
+      start = -1;
+    };
+    for (let x = 0; x <= N; x++) {
+      let h = EMPTY, b = 0;
+      if (x < N) { h = H[z * N + x]; if (h !== EMPTY) { b = below(h, at(x, z + dz)); if (b >= h) h = EMPTY; } }
+      if (start >= 0 && (h !== kh || b !== kb)) flush(x);
+      if (h !== EMPTY && start < 0) { start = x; kh = h; kb = b; }
+    }
+  }
+  return { position: pos.subarray(0, n * 3), normal: nor.subarray(0, n * 3), uv: uv.subarray(0, n * 2), index: idx.subarray(0, ni), quads: n / 4 };
 }
 </script>
 
@@ -729,6 +816,14 @@ function renderSample(rx, rz) {
 self.onmessage = async (e) => {
   const m = e.data;
   try {
+    if (m.type === 'voxel') {
+      const E = m.edges; // heights just outside the region: west (x=-1), east (x=512), north (z=-1), south (z=512)
+      const nb = (x, z) => { const a = x < 0 ? E.w : x >= 512 ? E.e : z < 0 ? E.n : E.s; return a ? a[x < 0 || x >= 512 ? z : x] : null; };
+      const g = buildVoxelArrays(m.heights, nb, m.sea);
+      const out = { position: g.position.slice(), normal: g.normal.slice(), uv: g.uv.slice(), index: g.index.slice() };
+      self.postMessage({ id: m.id, ok: true, ...out }, [out.position.buffer, out.normal.buffer, out.uv.buffer, out.index.buffer]);
+      return;
+    }
     const res = m.type === 'sample' ? renderSample(m.rx, m.rz) : await renderRegion(new Uint8Array(m.buffer), m.dim);
     self.postMessage({ id: m.id, ok: true, ...res }, [res.rgba.buffer, res.blocks.buffer, res.heights.buffer, res.depth.buffer]);
   } catch (err) {
@@ -746,7 +841,7 @@ let dpr = 1, cw = 0, ch = 0;
 const CANCEL = Symbol('cancel');
 
 // ---- Worker pool ----
-const workerURL = URL.createObjectURL(new Blob([$('#core').textContent, '\n', $('#worker-src').textContent], { type: 'text/javascript' }));
+const workerURL = URL.createObjectURL(new Blob([$('#core').textContent, '\n', $('#voxel').textContent, '\n', $('#worker-src').textContent], { type: 'text/javascript' }));
 const pool = (() => {
   const size = Math.max(1, Math.min(4, (navigator.hardwareConcurrency || 4) - 1));
   const idle = [], queue = [], pending = new Map();
@@ -1308,8 +1403,9 @@ $('#btn-export').onclick = () => {
 const View3D = (() => {
   const GRID = 128, STEP = 512 / GRID, SEA = 62;
   const el = $('#map3d');
-  let renderer, scene, camera, controls, terrain, spawnMark, light, dim = null, active = false, frame = 0, queued = false, exag = 1.6;
-  const meshes = new Map();
+  const MAX_BLOCKY = 9; // regions drawn as real blocks at once, nearest the camera first
+  let renderer, scene, camera, controls, terrain, spawnMark, light, dim = null, active = false, frame = 0, queued = false, exag = 1, gen = 0, lodTimer = 0;
+  const meshes = new Map(); // "rx,rz" → { r, mat, smooth, blocky, building, want }
 
   function init() {
     if (renderer) return true;
@@ -1325,6 +1421,7 @@ const View3D = (() => {
     controls.maxPolarAngle = Math.PI * 0.46; controls.minDistance = 16; controls.maxDistance = 9000;
     controls.zoomSpeed = 1.4;
     controls.addEventListener('change', render);
+    controls.addEventListener('change', scheduleLOD);
     scene.add(new THREE.HemisphereLight(0xeef4ff, 0x8a7a66, 0.62));
     light = new THREE.DirectionalLight(0xfff4e0, 0.7);
     light.position.set(-0.6, 1, -0.45);
@@ -1350,7 +1447,7 @@ const View3D = (() => {
       // Edge vertices sample the neighbouring region so meshes meet without gaps
       let h = heightAt(d, x0 + lx, z0 + lz);
       if (h === null) h = heightAt(d, x0 + Math.min(lx, 511), z0 + Math.min(lz, 511)) ?? SEA;
-      pos[k * 3] = x0 + lx; pos[k * 3 + 1] = h - SEA; pos[k * 3 + 2] = z0 + lz;
+      pos[k * 3] = x0 + lx; pos[k * 3 + 1] = h + 1 - SEA; pos[k * 3 + 2] = z0 + lz;
       uv[k * 2] = lx / 512; uv[k * 2 + 1] = 1 - lz / 512;
     }
     const idx = new Uint32Array(GRID * GRID * 6);
@@ -1370,13 +1467,75 @@ const View3D = (() => {
     tex.minFilter = THREE.LinearMipmapLinearFilter;
     tex.anisotropy = renderer.capabilities.getMaxAnisotropy();
     // Ungenerated pixels are transparent in the map image, so cut them out of the mesh
-    const mesh = new THREE.Mesh(g, new THREE.MeshLambertMaterial({ map: tex, alphaTest: 0.5, side: THREE.DoubleSide }));
-    terrain.add(mesh);
-    meshes.set(r.rx + ',' + r.rz, mesh);
+    const mat = new THREE.MeshLambertMaterial({ map: tex, alphaTest: 0.5, side: THREE.DoubleSide });
+    const smooth = new THREE.Mesh(g, mat);
+    terrain.add(smooth);
+    meshes.set(r.rx + ',' + r.rz, { r, mat, smooth, blocky: null, building: false, want: false });
   }
 
+  // ---- Level of detail: swap nearby regions to block-accurate meshes built on the workers ----
+  function edgeStrip(rx, rz, pick) {
+    const n = dim.regions.get(rx + ',' + rz);
+    if (!n) return null;
+    const a = new Int16Array(512);
+    for (let k = 0; k < 512; k++) a[k] = n.heights[pick(k)];
+    return a;
+  }
+  function buildBlocky(e) {
+    const { r } = e, myGen = gen;
+    e.building = true;
+    const edges = {
+      w: edgeStrip(r.rx - 1, r.rz, z => z * 512 + 511), e: edgeStrip(r.rx + 1, r.rz, z => z * 512),
+      n: edgeStrip(r.rx, r.rz - 1, x => 511 * 512 + x), s: edgeStrip(r.rx, r.rz + 1, x => x),
+    };
+    const heights = r.heights.slice();
+    pool.run(async () => ({ msg: { type: 'voxel', heights, edges, sea: SEA }, transfer: [heights.buffer] })).then(res => {
+      e.building = false;
+      if (myGen !== gen || !meshes.has(r.rx + ',' + r.rz)) return;
+      const g = new THREE.BufferGeometry();
+      // Free the copies in page memory once they're on the graphics card
+      const free = function () { this.array = null; };
+      g.setAttribute('position', new THREE.BufferAttribute(res.position, 3));
+      g.setAttribute('normal', new THREE.BufferAttribute(res.normal, 3).onUpload(free));
+      g.setAttribute('uv', new THREE.BufferAttribute(res.uv, 2).onUpload(free));
+      g.setIndex(new THREE.BufferAttribute(res.index, 1).onUpload(free));
+      g.computeBoundingSphere();
+      g.attributes.position.onUpload(free);
+      e.blocky = new THREE.Mesh(g, e.mat);
+      e.blocky.position.set(r.rx * 512, 0, r.rz * 512);
+      terrain.add(e.blocky);
+      applyLOD(e);
+      render();
+      updateLOD();
+    }, () => { e.building = false; });
+  }
+  function dropBlocky(e) {
+    if (!e.blocky) return;
+    terrain.remove(e.blocky); e.blocky.geometry.dispose(); e.blocky = null;
+  }
+  function applyLOD(e) {
+    if (e.blocky) e.blocky.visible = e.want;
+    e.smooth.visible = !(e.want && e.blocky);
+    if (!e.want) dropBlocky(e);
+  }
+  function updateLOD() {
+    if (!active || !dim) return;
+    const t = controls.target, dist = camera.position.distanceTo(t);
+    const reach = dist < 1800 ? Math.min(1100, Math.max(500, dist * 0.9)) : 0;
+    const list = [...meshes.values()].map(e => ({ e, d: Math.hypot(e.r.rx * 512 + 256 - t.x, e.r.rz * 512 + 256 - t.z) })).sort((a, b) => a.d - b.d);
+    list.forEach(({ e, d }, i) => { e.want = i < MAX_BLOCKY && d < reach + 362; applyLOD(e); });
+    // One build at a time, nearest first, so the closest ground turns blocky soonest
+    if (![...meshes.values()].some(e => e.building)) {
+      const next = list.find(({ e }) => e.want && !e.blocky);
+      if (next) buildBlocky(next.e);
+    }
+    render();
+  }
+  function scheduleLOD() { clearTimeout(lodTimer); lodTimer = setTimeout(updateLOD, 250); }
+
   function clear() {
-    for (const m of meshes.values()) { terrain.remove(m); m.geometry.dispose(); m.material.map.dispose(); m.material.dispose(); }
+    gen++;
+    for (const e of meshes.values()) { dropBlocky(e); terrain.remove(e.smooth); e.smooth.geometry.dispose(); e.mat.map.dispose(); e.mat.dispose(); }
     meshes.clear();
     if (spawnMark) { terrain.remove(spawnMark); spawnMark = null; }
   }
@@ -1439,6 +1598,7 @@ const View3D = (() => {
     setExag(exag);
     aim();
     render();
+    updateLOD();
     return true;
   }
   function exit() {
@@ -1450,11 +1610,11 @@ const View3D = (() => {
     resize(); requestDraw();
   }
 
-  function addRegion(d, r) { if (renderer && d === dim) { buildMesh(d, r); placeSpawn(); render(); } }
+  function addRegion(d, r) { if (renderer && d === dim) { buildMesh(d, r); placeSpawn(); render(); scheduleLOD(); } }
   function setDim(d) {
     if (!renderer || d === dim) return;
     dim = d;
-    if (active) { rebuild(); aim(); } else clear();
+    if (active) { rebuild(); aim(); updateLOD(); } else clear();
     if (!active) dim = null;
   }
   function resize() {
