@@ -31,6 +31,8 @@ const worldDir = fs.existsSync(path.join(server, levelName, 'level.dat')) ? path
   : fs.existsSync(path.join(server, 'level.dat')) ? server : null;
 if (!worldDir) { console.error(`No world found: expected ${path.join(server, levelName, 'level.dat')}`); process.exit(1); }
 
+// Only the Overworld is published. To add the Nether or End back, add 'nether' / 'end' here.
+const PUBLISH = new Set(['overworld']);
 const candidates = [
   ['overworld', 'Overworld', 'overworld', [path.join(worldDir, 'region'), path.join(worldDir, 'dimensions/minecraft/overworld/region')]],
   ['nether', 'Nether', 'nether', [path.join(worldDir, 'DIM-1/region'), path.join(worldDir + '_nether', 'DIM-1/region'), path.join(worldDir, 'dimensions/minecraft/the_nether/region')]],
@@ -77,6 +79,7 @@ let totalBytes = 0;
 const problems = { errors: 0, legacy: 0, external: 0 };
 
 for (const [key, label, kind, dirs] of candidates) {
+  if (!PUBLISH.has(key)) continue;
   const dir = dirs.find(d => fs.existsSync(d));
   if (!dir) continue;
   const files = fs.readdirSync(dir).filter(f => /^r\.-?\d+\.-?\d+\.mca$/.test(f));
