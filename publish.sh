@@ -20,5 +20,6 @@ git add -A map
 if git diff --cached --quiet; then echo "Map unchanged, nothing to publish."; exit 0; fi
 git -c user.name="SMP map" -c user.email="smp-map@users.noreply.github.com" commit --quiet -m "Update map $(date '+%Y-%m-%d %H:%M')"
 if command -v gh >/dev/null; then gh auth status >/dev/null 2>&1 || gh auth login --web --git-protocol https; gh auth setup-git; fi
-git push --quiet
+# The map is tens of MB; Git's default 1 MB HTTP buffer makes GitHub reject the push with HTTP 400
+git -c http.postBuffer=524288000 push --quiet
 echo "Published. The site updates in a minute or two: https://lucasschappi.github.io/smp-map/"
