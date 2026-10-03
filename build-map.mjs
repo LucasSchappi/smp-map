@@ -19,7 +19,10 @@ const html = fs.readFileSync(path.join(here, 'index.html'), 'utf8');
 const core = html.match(/<script id="core">([\s\S]*?)<\/script>/)[1];
 const worker = html.match(/<script id="worker-src" type="text\/plain">([\s\S]*?)<\/script>/)[1];
 globalThis.self = {};
-const { renderRegion, NBT } = new Function(core + worker + '\nreturn { renderRegion, NBT };')();
+// Decompress with Node's zlib rather than the browser's DecompressionStream, which older Node versions lack.
+const { renderRegion, NBT } = new Function('zlib', core + worker + `
+inflate = async (u8, format) => new Uint8Array(format === 'gzip' ? zlib.gunzipSync(u8) : zlib.inflateSync(u8));
+return { renderRegion, NBT };`)(zlib);
 
 // ---- Find the server's world and its dimensions ----
 const props = path.join(server, 'server.properties');
@@ -71,6 +74,7 @@ const out = path.join(here, 'map');
 fs.rmSync(out, { recursive: true, force: true });
 const manifest = { name: nameArg || data.LevelName || path.basename(path.resolve(server)), version: data.Version?.Name || null, generated: new Date().toISOString(), dims: [] };
 let totalBytes = 0;
+const problems = { errors: 0, legacy: 0, external: 0 };
 
 for (const [key, label, kind, dirs] of candidates) {
   const dir = dirs.find(d => fs.existsSync(d));
@@ -82,6 +86,7 @@ for (const [key, label, kind, dirs] of candidates) {
     const [, rx, rz] = f.match(/^r\.(-?\d+)\.(-?\d+)\.mca$/).map(Number);
     process.stdout.write(`\r${label}: ${i + 1}/${files.length} regions`);
     const res = await renderRegion(new Uint8Array(fs.readFileSync(path.join(dir, f))), kind);
+    for (const k in problems) problems[k] += res.stats[k] || 0;
     if (!res.stats.chunks) continue;
     const p = png(res.rgba, 512, 512), b = blockData(res);
     fs.writeFileSync(path.join(out, key, `r.${rx}.${rz}.png`), p);
@@ -93,5 +98,12 @@ for (const [key, label, kind, dirs] of candidates) {
   if (regions.length) manifest.dims.push({ key, label, kind, spawn: kind === 'overworld' ? spawn : null, regions });
 }
 
+if (problems.errors) console.warn(`${problems.errors} chunks couldn't be read.`);
+if (problems.legacy) console.warn(`${problems.legacy} chunks are from before Minecraft 1.13 and were skipped.`);
+if (problems.external) console.warn(`${problems.external} oversized chunks (.mcc files) were skipped.`);
+if (!manifest.dims.length) {
+  console.error(`Nothing was drawn, so nothing will be published. Node ${process.version}. Send this output to whoever set up the map.`);
+  process.exit(1);
+}
 fs.writeFileSync(path.join(out, 'manifest.json'), JSON.stringify(manifest));
 console.log(`Wrote map/ for "${manifest.name}": ${manifest.dims.map(d => `${d.label} ${d.regions.length}`).join(', ')} regions, ${(totalBytes / 1048576).toFixed(1)} MB`);

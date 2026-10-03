@@ -9,7 +9,8 @@ command -v git >/dev/null || { echo "Git is missing. Run: xcode-select --install
 command -v node >/dev/null || { echo "Node.js is missing. Install it from https://nodejs.org (the LTS button), then run this again."; exit 1; }
 [ -d "$SERVER" ] || { echo "Can't find the server folder at $SERVER"; exit 1; }
 
-if [ -d "$REPO_DIR/.git" ]; then git -C "$REPO_DIR" pull --quiet
+# Always start from the published version, dropping any half-finished local run
+if [ -d "$REPO_DIR/.git" ]; then git -C "$REPO_DIR" fetch --quiet && git -C "$REPO_DIR" reset --quiet --hard origin/main
 else git clone --quiet https://github.com/LucasSchappi/smp-map.git "$REPO_DIR"; fi
 cd "$REPO_DIR"
 
