@@ -1,5 +1,6 @@
 // Renders a Minecraft server folder into map/ so index.html shows it on GitHub Pages.
-// Usage: node build-map.mjs <server folder> [--name "Map title"]
+// Usage: node build-map.mjs <server folder> [--name "Map title"] [--markers-only]
+// Markers come from map-markers.txt in the server folder; --markers-only updates just those, in seconds.
 // Player positions are never written: only terrain, block names and spawn.
 import fs from 'fs';
 import path from 'path';
@@ -13,8 +14,30 @@ if (!server || !fs.existsSync(server)) {
   process.exit(1);
 }
 
-// Reuse the page's own NBT reader and region renderer so the published map matches the page.
 const here = path.dirname(new URL(import.meta.url).pathname);
+
+// ---- Markers: "x z level name" per line in <server>/map-markers.txt ----
+const LEVELS = { always: ['far', 'mid', 'near'], far: ['far'], mid: ['mid'], near: ['near'], 'far-mid': ['far', 'mid'], 'mid-near': ['mid', 'near'] };
+function writeMarkers() {
+  const file = path.join(server, 'map-markers.txt'), markers = [];
+  if (fs.existsSync(file)) {
+    fs.readFileSync(file, 'utf8').split(/\r?\n/).forEach((line, i) => {
+      const t = line.trim();
+      if (!t || t.startsWith('#')) return;
+      // "x z level name", or "x y z level name" as copied from the F3 screen
+      const m = t.match(/^(-?\d+(?:\.\d+)?)[\s,]+(-?\d+(?:\.\d+)?)(?:[\s,]+(-?\d+(?:\.\d+)?))?[\s,]+([a-z-]+)\s+(.+)$/i);
+      const level = m && LEVELS[m[4].toLowerCase()];
+      if (!level) { console.warn(`map-markers.txt line ${i + 1} skipped. Write it as: X Z level Name (level is always, far, mid, near, far-mid or mid-near)`); return; }
+      markers.push({ x: +m[1], z: +(m[3] ?? m[2]), levels: level, name: m[5].trim() });
+    });
+  }
+  fs.mkdirSync(path.join(here, 'map'), { recursive: true });
+  fs.writeFileSync(path.join(here, 'map', 'markers.json'), JSON.stringify(markers));
+  console.log(`${markers.length} markers`);
+}
+if (args.includes('--markers-only')) { writeMarkers(); process.exit(0); }
+
+// Reuse the page's own NBT reader and region renderer so the published map matches the page.
 const html = fs.readFileSync(path.join(here, 'index.html'), 'utf8');
 const core = html.match(/<script id="core">([\s\S]*?)<\/script>/)[1];
 const worker = html.match(/<script id="worker-src" type="text\/plain">([\s\S]*?)<\/script>/)[1];
@@ -113,4 +136,5 @@ if (!manifest.dims.length) {
   process.exit(1);
 }
 fs.writeFileSync(path.join(out, 'manifest.json'), JSON.stringify(manifest));
+writeMarkers();
 console.log(`Wrote map/ for "${manifest.name}": ${manifest.dims.map(d => `${d.label} ${d.regions.length}`).join(', ')} regions, ${(totalBytes / 1048576).toFixed(1)} MB`);

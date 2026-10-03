@@ -1255,6 +1255,12 @@ function loadManifest(m) {
   });
   S.gen++; pool.clear();
   S.dims = dims; S.sample = false; S.published = m;
+  // Markers from map-markers.txt on the server computer (overworld only)
+  const gen = S.gen;
+  fetch('map/markers.json', { cache: 'no-cache' }).then(r => r.ok ? r.json() : []).then(list => {
+    const over = dims.find(d => d.kind === 'overworld');
+    if (gen === S.gen && over && Array.isArray(list)) { over.markers = list; requestDraw(); }
+  }).catch(() => {});
   $('#world-name').textContent = m.name;
   $('#world-chip').textContent = 'Mapped ' + new Date(m.generated).toLocaleDateString(undefined, { day: 'numeric', month: 'short', year: 'numeric' });
   selectDim(dims[0]);
@@ -1482,12 +1488,63 @@ function draw() {
     ctx.fillStyle = T.accent; ctx.fill(); ctx.lineWidth = 2; ctx.strokeStyle = T.halo; ctx.stroke();
     label(p.name, x + 9, y);
   }
+  drawMarkers(d, s, ox, oy, label);
   if (d.spawn) {
     const x = d.spawn.x * s + ox, y = d.spawn.z * s + oy;
     ctx.beginPath(); ctx.moveTo(x, y - 8); ctx.lineTo(x + 8, y); ctx.lineTo(x, y + 8); ctx.lineTo(x - 8, y); ctx.closePath();
     ctx.fillStyle = T.marker; ctx.fill(); ctx.lineWidth = 2; ctx.strokeStyle = T.halo; ctx.stroke();
     label('Spawn', x + 12, y);
   }
+}
+
+// Zoom bands for markers, in screen pixels per block
+const zoomBand = s => s < 0.35 ? 'far' : s < 2.5 ? 'mid' : 'near';
+function drawMarkers(d, s, ox, oy, label) {
+  if (!d.markers || !d.markers.length) return;
+  const band = zoomBand(s), placed = [];
+  // Keep clear of the spawn marker and its label
+  if (d.spawn) { const x = d.spawn.x * s + ox, y = d.spawn.z * s + oy; placed.push([x - 10, y - 10, x + 58, y + 10]); }
+  const free = (x0, y0, x1, y1) => !placed.some(b => x0 < b[2] && x1 > b[0] && y0 < b[3] && y1 > b[1]);
+  // Bigger places claim their space first; overlapping labels after them are hidden
+  const rank = m => m.levels.includes('far') ? 0 : m.levels.includes('mid') ? 1 : 2;
+  // Area names for far-only places, pins for mid and "always", dots for near-only details
+  const styleOf = m => m.levels.length === 3 ? 1 : rank(m);
+  const list = d.markers.filter(m => m.levels.includes(band)).sort((a, b) => rank(a) - rank(b));
+  for (const m of list) {
+    const x = m.x * s + ox, y = m.z * s + oy;
+    if (x < -200 || y < -40 || x > cw + 200 || y > ch + 40) continue;
+    const style = styleOf(m);
+    if (style === 0) {
+      // Area name: large spaced capitals, no pin
+      ctx.font = '600 16px "Pixelify Sans", ui-monospace, monospace';
+      const text = m.name.toUpperCase(), w = ctx.measureText(text).width + text.length * 1.5;
+      if (!free(x - w / 2 - 4, y - 12, x + w / 2 + 4, y + 12)) continue;
+      placed.push([x - w / 2 - 4, y - 12, x + w / 2 + 4, y + 12]);
+      ctx.textAlign = 'center';
+      if ('letterSpacing' in ctx) ctx.letterSpacing = '1.5px';
+      ctx.lineWidth = 5; ctx.strokeStyle = T.halo; ctx.strokeText(text, x, y);
+      ctx.fillStyle = T.ink; ctx.fillText(text, x, y);
+      if ('letterSpacing' in ctx) ctx.letterSpacing = '0px';
+      ctx.textAlign = 'left';
+      continue;
+    }
+    ctx.font = style === 1 ? '600 12px "IBM Plex Sans", system-ui, sans-serif' : '500 11px "IBM Plex Sans", system-ui, sans-serif';
+    const w = ctx.measureText(m.name).width, lx = x + (style === 1 ? 10 : 7);
+    if (!free(x - 7, y - 16, lx + w + 3, y + 8)) continue;
+    placed.push([x - 7, y - 16, lx + w + 3, y + 8]);
+    if (style === 1) {
+      // Pin: a teardrop whose point sits on the spot
+      ctx.beginPath(); ctx.moveTo(x, y); ctx.bezierCurveTo(x - 7, y - 8, x - 6, y - 15, x, y - 15); ctx.bezierCurveTo(x + 6, y - 15, x + 7, y - 8, x, y);
+      ctx.fillStyle = T.accent; ctx.fill(); ctx.lineWidth = 2; ctx.strokeStyle = T.halo; ctx.stroke();
+      ctx.beginPath(); ctx.arc(x, y - 9.5, 2.2, 0, Math.PI * 2); ctx.fillStyle = T.halo; ctx.fill();
+      label(m.name, lx, y - 8);
+    } else {
+      ctx.beginPath(); ctx.arc(x, y, 3.5, 0, Math.PI * 2);
+      ctx.fillStyle = T.ink; ctx.fill(); ctx.lineWidth = 2; ctx.strokeStyle = T.halo; ctx.stroke();
+      label(m.name, lx, y);
+    }
+  }
+  ctx.font = '600 12px "IBM Plex Sans", system-ui, sans-serif';
 }
 
 function resize() {
