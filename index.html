@@ -8,6 +8,8 @@
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500&family=IBM+Plex+Sans:wght@400;500;600&family=Pixelify+Sans:wght@500;600&display=swap">
 <script src="https://cdnjs.cloudflare.com/ajax/libs/jszip/3.10.1/jszip.min.js"></script>
+<script defer src="https://cdn.jsdelivr.net/npm/three@0.128.0/build/three.min.js"></script>
+<script defer src="https://cdn.jsdelivr.net/npm/three@0.128.0/examples/js/controls/OrbitControls.js"></script>
 <style>
 /* Layout: full-bleed map canvas under a slim instrument bar; readouts float on the canvas corners like a surveyor's overlay */
 :root {
@@ -26,6 +28,7 @@
   --grid-strong: rgba(23, 32, 27, 0.42);
   --marker: #c0352a;
   --halo: #f7f9f5;
+  --sky: #b9d3e6;
   --scrim: rgba(18, 26, 21, 0.45);
   --shadow: 0 8px 28px rgba(20, 32, 25, 0.16);
   --f-display: "Pixelify Sans", ui-monospace, "SF Mono", monospace;
@@ -37,7 +40,7 @@
     --bg: #0d110f; --panel: #151a17; --panel-2: #1b221e; --glass: rgba(21, 26, 23, 0.92);
     --ink: #e1e8e2; --muted: #8b9890; --line: #2a332e; --accent: #47c6bb; --accent-ink: #052220;
     --void: #090c0a; --pending: #141a16; --grid: rgba(225, 232, 226, 0.12); --grid-strong: rgba(225, 232, 226, 0.36);
-    --marker: #ff6e5e; --halo: #101512; --scrim: rgba(0, 0, 0, 0.6); --shadow: 0 8px 28px rgba(0, 0, 0, 0.5);
+    --marker: #ff6e5e; --halo: #101512; --sky: #0e1822; --scrim: rgba(0, 0, 0, 0.6); --shadow: 0 8px 28px rgba(0, 0, 0, 0.5);
     color-scheme: dark;
   }
 }
@@ -45,7 +48,7 @@
   --bg: #0d110f; --panel: #151a17; --panel-2: #1b221e; --glass: rgba(21, 26, 23, 0.92);
   --ink: #e1e8e2; --muted: #8b9890; --line: #2a332e; --accent: #47c6bb; --accent-ink: #052220;
   --void: #090c0a; --pending: #141a16; --grid: rgba(225, 232, 226, 0.12); --grid-strong: rgba(225, 232, 226, 0.36);
-  --marker: #ff6e5e; --halo: #101512; --scrim: rgba(0, 0, 0, 0.6); --shadow: 0 8px 28px rgba(0, 0, 0, 0.5);
+  --marker: #ff6e5e; --halo: #101512; --sky: #0e1822; --scrim: rgba(0, 0, 0, 0.6); --shadow: 0 8px 28px rgba(0, 0, 0, 0.5);
   color-scheme: dark;
 }
 
@@ -114,6 +117,12 @@ button { cursor: pointer; }
 .zoom { display: flex; align-items: center; gap: 4px; padding: 4px; }
 .zoom-label { font: 12px var(--f-mono); color: var(--muted); min-width: 13ch; text-align: center; font-variant-numeric: tabular-nums; }
 
+#map3d { position: absolute; inset: 0; width: 100%; height: 100%; display: block; touch-action: none; background: var(--sky); }
+.panel3d { padding: 10px 12px; display: grid; gap: 8px; max-width: 340px; }
+.panel3d .hint { font-size: 12.5px; color: var(--muted); }
+.panel3d .hint kbd { font: 11px var(--f-mono); border: 1px solid var(--line); border-radius: 3px; padding: 0 4px; color: var(--ink); }
+.exag { display: flex; align-items: center; gap: 10px; font: 12px var(--f-mono); font-variant-numeric: tabular-nums; }
+.exag input { flex: 1; accent-color: var(--accent); }
 .drop-hint { position: absolute; inset: 12px; border: 2px dashed var(--accent); border-radius: 12px; display: grid; place-items: center; background: var(--scrim); color: #fff; font-family: var(--f-display); font-size: 26px; pointer-events: none; text-align: center; padding: 16px; }
 
 /* Sheets */
@@ -168,6 +177,7 @@ button { cursor: pointer; }
     </div>
     <nav class="dims" id="dims" role="tablist" aria-label="Dimension"></nav>
     <div class="actions">
+      <button class="tool" id="btn-3d" aria-pressed="false" title="Tilt the map into a 3D view">3D</button>
       <button class="tool" id="btn-grid" aria-pressed="false" title="Show region and chunk borders">Grid</button>
       <button class="tool" id="btn-export">Export PNG</button>
       <button class="primary" id="btn-load">Load world</button>
@@ -176,6 +186,7 @@ button { cursor: pointer; }
 
   <main class="stage" id="stage">
     <canvas id="map" tabindex="0" aria-label="World map. Drag to pan, scroll to zoom."></canvas>
+    <canvas id="map3d" tabindex="0" aria-label="3D world view. Drag to move, shift-drag to tilt and turn, scroll to zoom." hidden></canvas>
 
     <div class="status float" id="status">
       <div class="status-row">
@@ -187,6 +198,10 @@ button { cursor: pointer; }
     </div>
 
     <div class="bottom">
+      <div class="panel3d float" id="panel3d" hidden>
+        <div class="hint">Drag to move · <kbd>Shift</kbd>-drag or right-drag to tilt and turn · Scroll to zoom. On touch, use two fingers to tilt.</div>
+        <label class="exag" for="exag">Height <input type="range" id="exag" min="1" max="4" step="0.1" value="1.6"><span id="exag-val">×1.6</span></label>
+      </div>
       <div class="readout float" aria-live="off">
         <div class="coords">
           <span><b>X</b><span id="ro-x">—</span></span>
@@ -811,7 +826,9 @@ function addRegion(d, f, res) {
   else c.getContext('2d').putImageData(new ImageData(res.rgba, 512, 512), 0, 0);
   const sm = document.createElement('canvas'); sm.width = sm.height = 64;
   const sx = sm.getContext('2d'); sx.imageSmoothingQuality = 'high'; sx.drawImage(c, 0, 0, 64, 64);
-  d.regions.set(f.rx + ',' + f.rz, { rx: f.rx, rz: f.rz, canvas: c, small: sm, blocks: res.blocks, heights: res.heights, depth: res.depth, palette: res.palette });
+  const region = { rx: f.rx, rz: f.rz, canvas: c, small: sm, blocks: res.blocks, heights: res.heights, depth: res.depth, palette: res.palette };
+  d.regions.set(f.rx + ',' + f.rz, region);
+  View3D.addRegion(d, region);
 }
 
 // ---- Published map: pre-rendered regions served next to the page (see build-map.mjs) ----
@@ -861,6 +878,7 @@ function selectDim(d) {
   if (!d.view) d.view = medianView(d);
   startDim(d);
   renderTabs(); updateStatus(); updateZoomLabel(); requestDraw();
+  View3D.setDim(d);
 }
 
 // ---- Loading a world ----
@@ -1018,8 +1036,9 @@ async function walk(entry, out) {
 let T = {};
 function readTheme() {
   const cs = getComputedStyle(document.documentElement);
-  for (const k of ['void', 'pending', 'grid', 'grid-strong', 'marker', 'halo', 'ink', 'accent']) T[k] = cs.getPropertyValue('--' + k).trim();
+  for (const k of ['void', 'pending', 'grid', 'grid-strong', 'marker', 'halo', 'ink', 'accent', 'sky']) T[k] = cs.getPropertyValue('--' + k).trim();
   requestDraw();
+  View3D.theme();
 }
 let drawQueued = false;
 function requestDraw() { if (!drawQueued) { drawQueued = true; requestAnimationFrame(draw); } }
@@ -1084,6 +1103,7 @@ function resize() {
   dpr = window.devicePixelRatio || 1; cw = r.width; ch = r.height;
   canvas.width = Math.round(cw * dpr); canvas.height = Math.round(ch * dpr);
   draw();
+  View3D.resize();
 }
 new ResizeObserver(resize).observe($('#stage'));
 
@@ -1284,12 +1304,200 @@ $('#btn-export').onclick = () => {
   }, 'image/png');
 };
 
+// ---- 3D view: each region becomes a heightfield mesh textured with its map image ----
+const View3D = (() => {
+  const GRID = 128, STEP = 512 / GRID, SEA = 62;
+  const el = $('#map3d');
+  let renderer, scene, camera, controls, terrain, spawnMark, light, dim = null, active = false, frame = 0, queued = false, exag = 1.6;
+  const meshes = new Map();
+
+  function init() {
+    if (renderer) return true;
+    if (!window.THREE || !THREE.MapControls) return false;
+    try { renderer = new THREE.WebGLRenderer({ canvas: el, antialias: true }); }
+    catch { return false; }
+    renderer.outputEncoding = THREE.sRGBEncoding;
+    scene = new THREE.Scene();
+    scene.fog = new THREE.Fog(0xffffff, 1000, 4000);
+    camera = new THREE.PerspectiveCamera(50, 1, 1, 30000);
+    controls = new THREE.MapControls(camera, el);
+    controls.enableDamping = true; controls.dampingFactor = 0.12;
+    controls.maxPolarAngle = Math.PI * 0.46; controls.minDistance = 16; controls.maxDistance = 9000;
+    controls.zoomSpeed = 1.4;
+    controls.addEventListener('change', render);
+    scene.add(new THREE.HemisphereLight(0xeef4ff, 0x8a7a66, 0.62));
+    light = new THREE.DirectionalLight(0xfff4e0, 0.7);
+    light.position.set(-0.6, 1, -0.45);
+    scene.add(light);
+    terrain = new THREE.Group();
+    scene.add(terrain);
+    theme(); resize();
+    return true;
+  }
+
+  function heightAt(d, x, z) {
+    const r = d.regions.get(Math.floor(x / 512) + ',' + Math.floor(z / 512));
+    if (!r) return null;
+    const h = r.heights[(z - Math.floor(z / 512) * 512) * 512 + (x - Math.floor(x / 512) * 512)];
+    return h === -32768 ? null : h;
+  }
+
+  function buildMesh(d, r) {
+    const N = GRID + 1, pos = new Float32Array(N * N * 3), uv = new Float32Array(N * N * 2);
+    const x0 = r.rx * 512, z0 = r.rz * 512;
+    for (let j = 0; j < N; j++) for (let i = 0; i < N; i++) {
+      const lx = i * STEP, lz = j * STEP, k = j * N + i;
+      // Edge vertices sample the neighbouring region so meshes meet without gaps
+      let h = heightAt(d, x0 + lx, z0 + lz);
+      if (h === null) h = heightAt(d, x0 + Math.min(lx, 511), z0 + Math.min(lz, 511)) ?? SEA;
+      pos[k * 3] = x0 + lx; pos[k * 3 + 1] = h - SEA; pos[k * 3 + 2] = z0 + lz;
+      uv[k * 2] = lx / 512; uv[k * 2 + 1] = 1 - lz / 512;
+    }
+    const idx = new Uint32Array(GRID * GRID * 6);
+    let o = 0;
+    for (let j = 0; j < GRID; j++) for (let i = 0; i < GRID; i++) {
+      const a = j * N + i, b = a + 1, c = a + N, e = c + 1;
+      idx[o++] = a; idx[o++] = c; idx[o++] = b; idx[o++] = b; idx[o++] = c; idx[o++] = e;
+    }
+    const g = new THREE.BufferGeometry();
+    g.setAttribute('position', new THREE.BufferAttribute(pos, 3));
+    g.setAttribute('uv', new THREE.BufferAttribute(uv, 2));
+    g.setIndex(new THREE.BufferAttribute(idx, 1));
+    g.computeVertexNormals();
+    const tex = new THREE.CanvasTexture(r.canvas);
+    tex.encoding = THREE.sRGBEncoding;
+    tex.magFilter = THREE.NearestFilter;
+    tex.minFilter = THREE.LinearMipmapLinearFilter;
+    tex.anisotropy = renderer.capabilities.getMaxAnisotropy();
+    // Ungenerated pixels are transparent in the map image, so cut them out of the mesh
+    const mesh = new THREE.Mesh(g, new THREE.MeshLambertMaterial({ map: tex, alphaTest: 0.5, side: THREE.DoubleSide }));
+    terrain.add(mesh);
+    meshes.set(r.rx + ',' + r.rz, mesh);
+  }
+
+  function clear() {
+    for (const m of meshes.values()) { terrain.remove(m); m.geometry.dispose(); m.material.map.dispose(); m.material.dispose(); }
+    meshes.clear();
+    if (spawnMark) { terrain.remove(spawnMark); spawnMark = null; }
+  }
+
+  function placeSpawn() {
+    if (spawnMark || !dim || !dim.spawn) return;
+    const h = heightAt(dim, Math.floor(dim.spawn.x), Math.floor(dim.spawn.z));
+    if (h === null) return;
+    spawnMark = new THREE.Mesh(new THREE.OctahedronGeometry(5), new THREE.MeshBasicMaterial({ color: new THREE.Color(T.marker) }));
+    spawnMark.position.set(dim.spawn.x, h - SEA + 14 / exag, dim.spawn.z);
+    spawnMark.scale.y = 1.6 / exag;
+    terrain.add(spawnMark);
+  }
+
+  function rebuild() {
+    clear();
+    if (!dim) return;
+    for (const r of dim.regions.values()) buildMesh(dim, r);
+    placeSpawn();
+  }
+
+  function aim() {
+    const v = dim.view, target = new THREE.Vector3(v.cx, ((heightAt(dim, Math.floor(v.cx), Math.floor(v.cz)) ?? SEA) - SEA) * exag, v.cz);
+    const dist = Math.min(4000, Math.max(120, (ch / v.scale) * 0.8));
+    const tilt = 0.95; // radians from straight down
+    controls.target.copy(target);
+    camera.position.set(target.x, target.y + dist * Math.cos(tilt), target.z + dist * Math.sin(tilt));
+    controls.update();
+  }
+
+  // Draw only when something changed; keep going while the camera glides to a stop
+  function render() {
+    if (!active || queued) return;
+    queued = true;
+    frame = requestAnimationFrame(() => {
+      queued = false;
+      const moving = controls.update();
+      const d = camera.position.distanceTo(controls.target);
+      scene.fog.near = d * 1.4; scene.fog.far = d * 4.5;
+      renderer.render(scene, camera);
+      if (moving) render();
+    });
+  }
+
+  function setExag(v) {
+    exag = v;
+    if (!terrain) return;
+    terrain.scale.y = exag;
+    if (spawnMark) { terrain.remove(spawnMark); spawnMark = null; placeSpawn(); }
+    render();
+  }
+
+  function enter() {
+    if (!S.cur) return false;
+    if (!init()) return false;
+    active = true;
+    el.hidden = false; canvas.hidden = true;
+    resize();
+    if (dim !== S.cur) { dim = S.cur; rebuild(); }
+    setExag(exag);
+    aim();
+    render();
+    return true;
+  }
+  function exit() {
+    if (!active) return;
+    active = false; queued = false; cancelAnimationFrame(frame);
+    // Carry the 3D position back into the flat map
+    if (dim && dim.view) { dim.view.cx = controls.target.x; dim.view.cz = controls.target.z; }
+    el.hidden = true; canvas.hidden = false;
+    resize(); requestDraw();
+  }
+
+  function addRegion(d, r) { if (renderer && d === dim) { buildMesh(d, r); placeSpawn(); render(); } }
+  function setDim(d) {
+    if (!renderer || d === dim) return;
+    dim = d;
+    if (active) { rebuild(); aim(); } else clear();
+    if (!active) dim = null;
+  }
+  function resize() {
+    if (!renderer || !active) return;
+    renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, 2));
+    renderer.setSize(cw, ch, false);
+    camera.aspect = cw / Math.max(1, ch); camera.updateProjectionMatrix();
+    render();
+  }
+  function theme() {
+    if (!scene) return;
+    const sky = new THREE.Color(T.sky || '#b9d3e6');
+    scene.background = sky; scene.fog.color = sky;
+    render();
+  }
+  return { enter, exit, addRegion, setDim, resize, theme, setExag, get active() { return active; } };
+})();
+
+function set3D(on) {
+  if (on && !View3D.enter()) {
+    $('#warnings').innerHTML = "<li>The 3D view couldn't start. It needs WebGL and an internet connection to load its 3D library.</li>";
+    return;
+  }
+  if (!on) View3D.exit();
+  $('#btn-3d').setAttribute('aria-pressed', String(on));
+  $('#panel3d').hidden = !on;
+  document.querySelector('.readout').hidden = on;
+  document.querySelector('.nav').hidden = on;
+  $('#btn-grid').hidden = on;
+}
+$('#btn-3d').onclick = () => set3D(!View3D.active);
+$('#exag').oninput = e => { const v = +e.target.value; $('#exag-val').textContent = '×' + v.toFixed(1); View3D.setExag(v); };
+// A link ending in #3d opens straight into the 3D view
+if (location.hash === '#3d') window.addEventListener('load', () => setTimeout(() => set3D(true), 300));
+
+
 // ---- Boot ----
 readTheme();
 matchMedia('(prefers-color-scheme: dark)').addEventListener('change', readTheme);
 new MutationObserver(readTheme).observe(document.documentElement, { attributes: true, attributeFilter: ['data-theme'] });
 document.fonts && document.fonts.ready.then(requestDraw);
 resize();
+
 boot();
 })();
 </script>
