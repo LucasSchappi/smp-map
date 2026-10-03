@@ -1,0 +1,1297 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Anvil World Mapper</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500&family=IBM+Plex+Sans:wght@400;500;600&family=Pixelify+Sans:wght@500;600&display=swap">
+<script src="https://cdnjs.cloudflare.com/ajax/libs/jszip/3.10.1/jszip.min.js"></script>
+<style>
+/* Layout: full-bleed map canvas under a slim instrument bar; readouts float on the canvas corners like a surveyor's overlay */
+:root {
+  --bg: #e7ebe5;
+  --panel: #f7f9f5;
+  --panel-2: #edf1ea;
+  --glass: rgba(247, 249, 245, 0.92);
+  --ink: #17201b;
+  --muted: #59665e;
+  --line: #c4ccc2;
+  --accent: #0e7470;
+  --accent-ink: #ffffff;
+  --void: #d3d9d0;
+  --pending: #c8cfc5;
+  --grid: rgba(23, 32, 27, 0.16);
+  --grid-strong: rgba(23, 32, 27, 0.42);
+  --marker: #c0352a;
+  --halo: #f7f9f5;
+  --scrim: rgba(18, 26, 21, 0.45);
+  --shadow: 0 8px 28px rgba(20, 32, 25, 0.16);
+  --f-display: "Pixelify Sans", ui-monospace, "SF Mono", monospace;
+  --f-body: "IBM Plex Sans", system-ui, -apple-system, "Segoe UI", sans-serif;
+  --f-mono: "IBM Plex Mono", ui-monospace, "SF Mono", Menlo, monospace;
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --bg: #0d110f; --panel: #151a17; --panel-2: #1b221e; --glass: rgba(21, 26, 23, 0.92);
+    --ink: #e1e8e2; --muted: #8b9890; --line: #2a332e; --accent: #47c6bb; --accent-ink: #052220;
+    --void: #090c0a; --pending: #141a16; --grid: rgba(225, 232, 226, 0.12); --grid-strong: rgba(225, 232, 226, 0.36);
+    --marker: #ff6e5e; --halo: #101512; --scrim: rgba(0, 0, 0, 0.6); --shadow: 0 8px 28px rgba(0, 0, 0, 0.5);
+    color-scheme: dark;
+  }
+}
+:root[data-theme="dark"] {
+  --bg: #0d110f; --panel: #151a17; --panel-2: #1b221e; --glass: rgba(21, 26, 23, 0.92);
+  --ink: #e1e8e2; --muted: #8b9890; --line: #2a332e; --accent: #47c6bb; --accent-ink: #052220;
+  --void: #090c0a; --pending: #141a16; --grid: rgba(225, 232, 226, 0.12); --grid-strong: rgba(225, 232, 226, 0.36);
+  --marker: #ff6e5e; --halo: #101512; --scrim: rgba(0, 0, 0, 0.6); --shadow: 0 8px 28px rgba(0, 0, 0, 0.5);
+  color-scheme: dark;
+}
+
+*, *::before, *::after { box-sizing: border-box; }
+html, body { height: 100%; }
+body { margin: 0; }
+[hidden] { display: none !important; }
+img { max-width: 100%; }
+body { background: var(--bg); color: var(--ink); font: 14px/1.45 var(--f-body); overflow: hidden; }
+button, input { font: inherit; color: inherit; }
+button { cursor: pointer; }
+:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.sr { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; }
+
+.app { height: 100%; display: grid; grid-template-rows: auto 1fr; }
+
+/* Instrument bar */
+.bar { display: flex; flex-wrap: wrap; align-items: center; gap: 10px 18px; padding: 10px 16px; background: var(--panel); border-bottom: 1px solid var(--line); }
+.brand { display: flex; align-items: center; gap: 10px; }
+.mark { display: grid; grid-template-columns: repeat(3, 6px); gap: 1px; }
+.mark i { width: 6px; height: 6px; display: block; }
+.wordmark { font-family: var(--f-display); font-weight: 600; font-size: 20px; line-height: 1; letter-spacing: 0.01em; white-space: nowrap; }
+.world { display: flex; align-items: center; gap: 8px; min-width: 0; }
+.world-name { font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 26ch; }
+.chip { font: 500 11px/1 var(--f-mono); text-transform: uppercase; letter-spacing: 0.06em; padding: 4px 6px; border: 1px solid var(--line); border-radius: 4px; color: var(--muted); white-space: nowrap; }
+.dims { display: flex; gap: 2px; padding: 3px; border-radius: 8px; border: 1px solid var(--line); background: var(--panel-2); overflow-x: auto; max-width: 100%; }
+.dims button { border: 0; background: transparent; padding: 5px 10px; border-radius: 6px; color: var(--muted); white-space: nowrap; display: flex; gap: 6px; align-items: baseline; }
+.dims button[aria-selected="true"] { background: var(--panel); color: var(--ink); box-shadow: 0 1px 2px rgba(0,0,0,0.12); font-weight: 500; }
+.dims .count { font: 11px var(--f-mono); color: var(--muted); font-variant-numeric: tabular-nums; }
+.actions { margin-left: auto; display: flex; gap: 8px; }
+.tool { background: transparent; border: 1px solid var(--line); padding: 6px 11px; border-radius: 6px; }
+.tool:hover { border-color: var(--muted); }
+.tool[aria-pressed="true"] { border-color: var(--accent); color: var(--accent); }
+.primary { background: var(--accent); color: var(--accent-ink); border: 1px solid var(--accent); padding: 6px 14px; border-radius: 6px; font-weight: 600; }
+.primary:hover { filter: brightness(1.08); }
+
+/* Map stage */
+.stage { position: relative; overflow: hidden; min-height: 0; background: var(--void); }
+#map { position: absolute; inset: 0; width: 100%; height: 100%; display: block; touch-action: none; cursor: grab; }
+#map.dragging { cursor: grabbing; }
+.float { background: var(--glass); border: 1px solid var(--line); border-radius: 8px; box-shadow: var(--shadow); backdrop-filter: blur(6px); }
+
+.status { position: absolute; top: 12px; left: 12px; max-width: min(460px, calc(100% - 24px)); padding: 10px 12px; display: grid; gap: 8px; }
+.status-row { display: flex; align-items: center; gap: 12px; justify-content: space-between; flex-wrap: wrap; }
+.status-text { font-size: 13px; }
+.status-text strong { font-weight: 600; }
+.status .primary { padding: 4px 10px; font-size: 13px; }
+.progress { height: 4px; border-radius: 2px; background: var(--panel-2); overflow: hidden; }
+.progress span { display: block; height: 100%; width: 0; background: var(--accent); transition: width 0.2s; }
+.warnings { margin: 0; padding: 0; list-style: none; display: grid; gap: 4px; font-size: 12px; color: var(--muted); }
+.warnings li::before { content: "! "; color: var(--marker); font-weight: 600; }
+
+.bottom { position: absolute; left: 12px; right: 12px; bottom: 12px; display: flex; flex-wrap: wrap; gap: 10px; justify-content: space-between; align-items: flex-end; pointer-events: none; }
+.bottom > * { pointer-events: auto; }
+.readout { padding: 10px 12px; min-width: 250px; display: grid; gap: 3px; }
+.coords { display: flex; gap: 14px; font: 500 13px var(--f-mono); font-variant-numeric: tabular-nums; }
+.coords b { color: var(--muted); font-weight: 400; margin-right: 4px; }
+.ro-block { font-weight: 600; }
+.ro-meta { font: 12px var(--f-mono); color: var(--muted); font-variant-numeric: tabular-nums; }
+.nav { display: flex; flex-direction: column; gap: 8px; align-items: flex-end; }
+.goto { display: flex; padding: 4px; gap: 4px; }
+.goto input { width: 130px; border: 0; background: transparent; padding: 4px 6px; font-family: var(--f-mono); font-size: 13px; }
+.goto input:focus-visible { outline-offset: 0; border-radius: 4px; }
+.goto button, .zoom button { border: 0; background: var(--panel-2); border-radius: 5px; padding: 4px 10px; }
+.goto button:hover, .zoom button:hover { background: var(--line); }
+.zoom { display: flex; align-items: center; gap: 4px; padding: 4px; }
+.zoom-label { font: 12px var(--f-mono); color: var(--muted); min-width: 13ch; text-align: center; font-variant-numeric: tabular-nums; }
+
+.drop-hint { position: absolute; inset: 12px; border: 2px dashed var(--accent); border-radius: 12px; display: grid; place-items: center; background: var(--scrim); color: #fff; font-family: var(--f-display); font-size: 26px; pointer-events: none; text-align: center; padding: 16px; }
+
+/* Sheets */
+.backdrop { position: fixed; inset: 0; z-index: 10; display: grid; place-items: center; padding: 16px; background: var(--scrim); }
+.sheet { width: 100%; max-width: 640px; max-height: calc(100% - 8px); overflow: auto; background: var(--panel); border: 1px solid var(--line); border-radius: 12px; box-shadow: var(--shadow); padding: 22px; display: grid; gap: 16px; }
+.sheet h2 { margin: 0; font-family: var(--f-display); font-weight: 600; font-size: 24px; line-height: 1.15; text-wrap: balance; }
+.sheet p { margin: 0; color: var(--muted); max-width: 62ch; }
+.options { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 10px; }
+.option { text-align: left; display: grid; gap: 4px; align-content: start; padding: 14px; border: 1px solid var(--line); border-radius: 8px; background: var(--panel-2); }
+.option:hover { border-color: var(--accent); }
+.option strong { font-size: 15px; }
+.option span { font-size: 12.5px; color: var(--muted); }
+.option code { font: 12px var(--f-mono); }
+.where { border-top: 1px solid var(--line); padding-top: 14px; }
+.where summary { cursor: pointer; font-weight: 500; }
+.where dl { display: grid; grid-template-columns: max-content minmax(0, 1fr); gap: 6px 14px; margin: 12px 0 0; font-size: 13px; }
+.where dt { color: var(--muted); }
+.where dd { margin: 0; font-family: var(--f-mono); font-size: 12px; overflow-wrap: anywhere; }
+.fine { font-size: 12.5px; }
+.sheet-foot { display: flex; justify-content: space-between; align-items: center; gap: 12px; flex-wrap: wrap; }
+.sheet-error { color: var(--marker); font-size: 13px; }
+.export-img { max-width: 100%; max-height: 55vh; justify-self: center; image-rendering: pixelated; border: 1px solid var(--line); border-radius: 6px; background: var(--void); }
+
+@media (max-width: 640px) {
+  .bar { gap: 8px 12px; padding: 8px 12px; }
+  .wordmark { font-size: 17px; }
+  .actions { margin-left: 0; width: 100%; }
+  .actions .primary { margin-left: auto; }
+  .options { grid-template-columns: 1fr; }
+  .readout { min-width: 0; flex: 1 1 100%; }
+  .nav { flex-direction: row; flex-wrap: wrap; justify-content: flex-end; width: 100%; }
+  .goto input { width: 100px; }
+}
+@media (prefers-reduced-motion: reduce) { .progress span { transition: none; } }
+</style>
+</head>
+<body>
+
+<div class="app">
+  <header class="bar">
+    <div class="brand">
+      <span class="mark" aria-hidden="true">
+        <i style="background:#6a9c45"></i><i style="background:#6a9c45"></i><i style="background:#3b66c4"></i>
+        <i style="background:#4b7a2a"></i><i style="background:#dbcfa3"></i><i style="background:#3b66c4"></i>
+        <i style="background:#7d7d7d"></i><i style="background:#6a9c45"></i><i style="background:#dbcfa3"></i>
+      </span>
+      <span class="wordmark">Anvil Mapper</span>
+    </div>
+    <div class="world">
+      <span class="world-name" id="world-name">Sample terrain</span>
+      <span class="chip" id="world-chip">Example</span>
+    </div>
+    <nav class="dims" id="dims" role="tablist" aria-label="Dimension"></nav>
+    <div class="actions">
+      <button class="tool" id="btn-grid" aria-pressed="false" title="Show region and chunk borders">Grid</button>
+      <button class="tool" id="btn-export">Export PNG</button>
+      <button class="primary" id="btn-load">Load world</button>
+    </div>
+  </header>
+
+  <main class="stage" id="stage">
+    <canvas id="map" tabindex="0" aria-label="World map. Drag to pan, scroll to zoom."></canvas>
+
+    <div class="status float" id="status">
+      <div class="status-row">
+        <div class="status-text" id="status-text">Generating sample terrain…</div>
+        <button class="primary" id="status-load">Load your world</button>
+      </div>
+      <div class="progress" id="progress"><span id="progress-bar"></span></div>
+      <ul class="warnings" id="warnings"></ul>
+    </div>
+
+    <div class="bottom">
+      <div class="readout float" aria-live="off">
+        <div class="coords">
+          <span><b>X</b><span id="ro-x">—</span></span>
+          <span><b>Z</b><span id="ro-z">—</span></span>
+          <span><b>Y</b><span id="ro-y">—</span></span>
+        </div>
+        <div class="ro-block" id="ro-block">Point at the map to read a block</div>
+        <div class="ro-meta" id="ro-meta">Chunk — · Region —</div>
+      </div>
+      <div class="nav">
+        <form class="goto float" id="goto">
+          <label for="goto-input" class="sr">Go to coordinates (X Z)</label>
+          <input id="goto-input" placeholder="X Z, e.g. 120 -340" autocomplete="off" spellcheck="false">
+          <button type="submit">Go</button>
+        </form>
+        <div class="zoom float">
+          <button id="zoom-out" aria-label="Zoom out">−</button>
+          <span class="zoom-label" id="zoom-label">1 px = 1 block</span>
+          <button id="zoom-in" aria-label="Zoom in">+</button>
+          <button id="zoom-fit">Fit</button>
+        </div>
+      </div>
+    </div>
+
+    <div class="drop-hint" id="drop-hint" hidden>Drop your world folder or .zip</div>
+  </main>
+</div>
+
+<div class="backdrop" id="load-sheet" hidden>
+  <div class="sheet" role="dialog" aria-modal="true" aria-labelledby="load-title">
+    <h2 id="load-title">Load a Java Edition world</h2>
+    <p>Pick your world folder, a .zip of it, or individual region files. The world is read inside this browser tab and never uploaded anywhere.</p>
+    <div class="options">
+      <button class="option" id="opt-folder">
+        <strong>World folder</strong>
+        <span>The folder that holds <code>level.dat</code> and <code>region</code>.</span>
+      </button>
+      <button class="option" id="opt-zip">
+        <strong>Zipped world</strong>
+        <span>A .zip of the world, or of a whole server folder to get all dimensions.</span>
+      </button>
+      <button class="option" id="opt-regions">
+        <strong>Region files</strong>
+        <span>One or more <code>r.X.Z.mca</code> files from a <code>region</code> folder.</span>
+      </button>
+    </div>
+    <p class="fine">You can also drop a folder or .zip anywhere on the map. Works with Minecraft 1.13 and newer. Bedrock Edition worlds use a different format and can't be read.</p>
+    <details class="where">
+      <summary>Where to find your world</summary>
+      <dl>
+        <dt>Windows</dt><dd>%APPDATA%\.minecraft\saves\&lt;world&gt;</dd>
+        <dt>macOS</dt><dd>~/Library/Application Support/minecraft/saves/&lt;world&gt;</dd>
+        <dt>Linux</dt><dd>~/.minecraft/saves/&lt;world&gt;</dd>
+        <dt>Server</dt><dd>world/ next to the server jar. Paper and Spigot keep the Nether and End in world_nether/ and world_the_end/, so zip the server folder to map all three.</dd>
+      </dl>
+    </details>
+    <div class="sheet-foot">
+      <span class="sheet-error" id="load-error"></span>
+      <button class="tool" id="load-close">Cancel</button>
+    </div>
+    <input type="file" id="pick-folder" webkitdirectory directory multiple hidden>
+    <input type="file" id="pick-zip" accept=".zip,application/zip" hidden>
+    <input type="file" id="pick-regions" accept=".mca" multiple hidden>
+  </div>
+</div>
+
+<div class="backdrop" id="export-sheet" hidden>
+  <div class="sheet" role="dialog" aria-modal="true" aria-labelledby="export-title">
+    <h2 id="export-title">Map image</h2>
+    <p id="export-info"></p>
+    <img class="export-img" id="export-img" alt="Rendered map of the current dimension">
+    <div class="sheet-foot"><button class="primary" id="export-download">Download PNG</button><button class="tool" id="export-close">Close</button></div>
+  </div>
+</div>
+
+<script id="core">
+// Shared by the page and the render workers: NBT reader and decompression.
+const NBT = (() => {
+  const td = new TextDecoder();
+  function parse(u8) {
+    const dv = new DataView(u8.buffer, u8.byteOffset, u8.byteLength);
+    let p = 0;
+    const str = () => { const n = dv.getUint16(p); p += 2; const s = td.decode(u8.subarray(p, p + n)); p += n; return s; };
+    function payload(t) {
+      switch (t) {
+        case 1: return dv.getInt8(p++);
+        case 2: { const v = dv.getInt16(p); p += 2; return v; }
+        case 3: { const v = dv.getInt32(p); p += 4; return v; }
+        case 4: { const v = dv.getInt32(p) * 4294967296 + dv.getUint32(p + 4); p += 8; return v; }
+        case 5: { const v = dv.getFloat32(p); p += 4; return v; }
+        case 6: { const v = dv.getFloat64(p); p += 8; return v; }
+        case 7: { const n = dv.getInt32(p); p += 4; const v = u8.subarray(p, p + n); p += n; return v; }
+        case 8: return str();
+        case 9: {
+          const et = u8[p++]; const n = dv.getInt32(p); p += 4;
+          if (et === 0 || n <= 0) return [];
+          const a = new Array(n); for (let i = 0; i < n; i++) a[i] = payload(et); return a;
+        }
+        case 10: { const o = {}; for (;;) { const tt = u8[p++]; if (tt === 0) break; const k = str(); o[k] = payload(tt); } return o; }
+        case 11: { const n = dv.getInt32(p); p += 4; const a = new Int32Array(n); for (let i = 0; i < n; i++, p += 4) a[i] = dv.getInt32(p); return a; }
+        // Long arrays come back as [hi, lo, hi, lo, …] 32-bit halves for bit unpacking.
+        case 12: { const n = dv.getInt32(p) * 2; p += 4; const a = new Uint32Array(n); for (let i = 0; i < n; i++, p += 4) a[i] = dv.getUint32(p); return a; }
+        default: throw new Error('Unknown NBT tag ' + t);
+      }
+    }
+    if (u8[p++] !== 10) throw new Error('NBT root is not a compound');
+    str();
+    return payload(10);
+  }
+  return { parse };
+})();
+
+async function inflate(u8, format) {
+  const stream = new Blob([u8]).stream().pipeThrough(new DecompressionStream(format));
+  return new Uint8Array(await new Response(stream).arrayBuffer());
+}
+</script>
+
+<script id="worker-src" type="text/plain">
+// ---- Render worker: turns one .mca region file into a 512×512 top-down image ----
+const EMPTY = -32768, NONE = 0xFFFF, MAXD = 48;
+const AIR = new Set(['air', 'cave_air', 'void_air', 'barrier', 'light', 'structure_void']);
+const WATERY = new Set(['water', 'bubble_column', 'kelp', 'kelp_plant', 'seagrass', 'tall_seagrass']);
+const FULL = new Set(['full', 'fullchunk', 'postprocessed', 'features', 'initialize_light', 'light', 'spawn', 'heightmaps', 'decorated', 'lighted', 'mobs_spawned', 'finalized']);
+// Grass colour overrides by biome (grass blocks and plants on top only)
+const BIOME_GRASS = new Map([['dappled_forest', 0xc8782a]]);
+const GRASSY = new Set(['grass_block', 'short_grass', 'grass', 'tall_grass', 'fern', 'large_fern', 'bush']);
+const shortName = n => { const i = n.indexOf(':'); return i < 0 ? n : n.slice(i + 1); };
+
+class Palette {
+  constructor() { this.map = new Map(); this.names = []; this.kind = []; }
+  id(name) {
+    let i = this.map.get(name);
+    if (i === undefined) {
+      i = this.names.length; this.map.set(name, i); this.names.push(name);
+      const s = shortName(name); this.kind.push(AIR.has(s) ? 1 : WATERY.has(s) ? 2 : 0);
+    }
+    return i;
+  }
+}
+
+// ---- Block colours (top faces, roughly matching in-game textures) ----
+const C_TABLE = `
+grass_block 6a9c45 short_grass 5f8f3c grass 5f8f3c tall_grass 5f8f3c fern 568a38 large_fern 568a38 bush 5a8a3a
+dirt 866043 coarse_dirt 77553b rooted_dirt 90674d podzol 5f4421 mycelium 6f6369 dirt_path 9a7f45 farmland 6a4527 mud 3c3a3d mud_bricks 8a6a4f packed_mud 8e6b52 clay a0a6b3 moss_block 5a6e2d moss_carpet 5a6e2d pale_moss_block 6b7569 pale_moss_carpet 6b7569
+sand dbcfa3 red_sand be6621 sandstone d8cb9b cut_sandstone d9cd9e chiseled_sandstone d8ca9b smooth_sandstone dccfa0 red_sandstone b5621f cut_red_sandstone b8641f smooth_red_sandstone b5621f gravel 847f7e suspicious_sand d6c99c suspicious_gravel 817c7b
+stone 7d7d7d cobblestone 7a7a7a mossy_cobblestone 6e7d5c stone_bricks 7a7979 mossy_stone_bricks 73795f cracked_stone_bricks 777676 chiseled_stone_bricks 777777 smooth_stone 9f9f9f
+granite 956755 polished_granite 9a6b59 diorite bdbcbd polished_diorite c1c1c3 andesite 888889 polished_andesite 848686 calcite dfe0dc tuff 6c6d66 dripstone_block 866b5c pointed_dripstone 866b5c
+deepslate 4d4d50 cobbled_deepslate 4d4d51 polished_deepslate 48484a deepslate_bricks 474747 deepslate_tiles 363637 bedrock 555555 obsidian 0f0b19 crying_obsidian 200a3c
+water 3b66c4 lava d4590f ice 91b7fd packed_ice 8db4fa blue_ice 74a8fd frosted_ice 8cb1f7 snow f4f9fb snow_block f4f9fb powder_snow f2f7f9
+oak_leaves 4b7a2a spruce_leaves 3b5e3b birch_leaves 6a8c42 jungle_leaves 3f8a1f acacia_leaves 4c7a1e dark_oak_leaves 3f6b22 mangrove_leaves 4a7d2b azalea_leaves 5b7a2f flowering_azalea_leaves 707f45 cherry_leaves e5adc2 pale_oak_leaves 8a9188 red_poplar_leaves b8352a orange_poplar_leaves d9781f yellow_poplar_leaves e3b72c
+oak_log a5844f spruce_log 6e5434 birch_log c8b77a jungle_log 9a6f4a acacia_log a35a33 dark_oak_log 4c3322 mangrove_log 6d2f2b cherry_log c88f8c pale_oak_log d3c8c4 poplar_log c9b68c crimson_stem 7a3a50 warped_stem 3a8e8c bamboo_block 7f8f2f
+oak_planks a2834f spruce_planks 725430 birch_planks c0af79 jungle_planks a0734d acacia_planks a85a32 dark_oak_planks 432b14 mangrove_planks 763631 cherry_planks e3b3ad pale_oak_planks e3d9d6 poplar_planks d9c69c bamboo_planks c4af52 bamboo_mosaic c4af52 crimson_planks 653147 warped_planks 2b6963
+netherrack 6f3534 nether_bricks 2c1519 red_nether_bricks 450709 soul_sand 51402f soul_soil 4b3a2e basalt 49484d polished_basalt 58585b smooth_basalt 48484e blackstone 2a2329 polished_blackstone 35303b polished_blackstone_bricks 302a32 gilded_blackstone 3a2d26 magma_block 8e3f20 glowstone c99c5c shroomlight f19a4a nether_wart_block 730302 warped_wart_block 167879 crimson_nylium 852323 warped_nylium 2b7265 nether_gold_ore 73362b nether_quartz_ore 75413d ancient_debris 5f4039 crimson_roots 7e0816 warped_roots 14968a nether_sprouts 13977d weeping_vines 8a1a0e weeping_vines_plant 8a1a0e twisting_vines 148f7c twisting_vines_plant 148f7c crimson_fungus a52a2a warped_fungus 4a8a6f fire e88a2b soul_fire 3ad9e0 soul_campfire 6a5a3a
+end_stone dbde9e end_stone_bricks dadd9e purpur_block a97ca9 purpur_pillar ab81ab chorus_plant 5d395d chorus_flower 977a97 end_rod e0d8cc dragon_egg 0c0910 end_portal_frame 3b6156 end_gateway 0c0910 end_portal 0c0910
+quartz_block ece6df smooth_quartz ece6df quartz_bricks eae4dd quartz_pillar ebe5de chiseled_quartz_block e7e0d8
+bricks 966153 bookshelf a2834f chiseled_bookshelf a2834f crafting_table 8b6a43 furnace 6e6e6e blast_furnace 5d5c5d smoker 6b5b4a chest a1782f trapped_chest a1782f ender_chest 233436 barrel 8b6a3b hay_block a68b0d target e3b6a8 tnt db441a note_block 5a3d2c jukebox 5a3d2c beacon 75dcd7 anvil 444444 chipped_anvil 444444 damaged_anvil 444444 lantern 6a5a4a soul_lantern 4a6a6a campfire 8e7044 bell d6a032 lectern 9f7d4e composter 7a5a2a cauldron 3e3e3f water_cauldron 3e5a9a lava_cauldron b0501a grindstone 8e8e8e stonecutter 7b7672 loom 9a7a59 cartography_table 6a4a36 fletching_table c1a96f smithing_table 3a3a46 enchanting_table 6b2a2a brewing_stand 7a6a4a hopper 4a4a4a dispenser 6e6e6e dropper 6e6e6e observer 5a5a5a piston 9a8a6a sticky_piston 8a9a5a redstone_wire a01b10 redstone_lamp 9a6a3a redstone_torch b8261a redstone_wall_torch b8261a repeater a09a94 comparator a39d97 lever 7a6a4a daylight_detector 8a7a5a rail 7b6a4e powered_rail 8a6a3a detector_rail 7a6a5a activator_rail 7a5a4a crafter 6a6a6a
+torch e0b050 wall_torch e0b050 soul_torch 6ad3d9 soul_wall_torch 6ad3d9 ladder 9a7a45 scaffolding b89a5a iron_bars 6a6a6a chain 3a3f4a cobweb e3e7e8 flower_pot 7a4535 decorated_pot 8e5642 sea_pickle 6a7a2a conduit 9a8a6a lightning_rod c06c50 respawn_anchor 2a1a3a lodestone 8a8a8a spawner 2a3a4a trial_spawner 3a4a4a vault 3a4a4a heavy_core 4a4a4a
+iron_block dcdcdc gold_block f6d23d diamond_block 62ede4 emerald_block 2acb57 lapis_block 1f4597 redstone_block a41e08 coal_block 161616 netherite_block 433e40 amethyst_block 8561c0 budding_amethyst 8a5fc5 raw_iron_block a6896b raw_gold_block dda52f raw_copper_block 9a6a4f copper_block c06c50 resin_block d4752a resin_bricks c9652a resin_clump d4752a
+prismarine 63a698 prismarine_bricks 63ab9e dark_prismarine 33584a sea_lantern acc8be sponge c4c04e wet_sponge a9a63e slime_block 70c05a honey_block f9ae36 honeycomb_block e5941e bee_nest c99a4a beehive b48a52
+glass c3dfe3 glass_pane c3dfe3 tinted_glass 2c2730 terracotta 985e43
+sculk 0c2a33 sculk_vein 0c2a33 sculk_catalyst 2a3a3c sculk_sensor 0f4a55 calibrated_sculk_sensor 0f4a55 sculk_shrieker 2a3a3c reinforced_deepslate 4a4f4a
+ochre_froglight f6e8a7 verdant_froglight d8f0cc pearlescent_froglight f0dcea
+pumpkin c27521 carved_pumpkin c27521 jack_o_lantern d0882a melon 8a9b1f cactus 5a8a2f sugar_cane 8fb85f bamboo 5c8d25 bamboo_sapling 5c8d25 lily_pad 208030 vine 4d7a1f glow_lichen 7a8a7a sweet_berry_bush 3e6a2b dead_bush 8b6a3a cocoa 9a6a3a
+brown_mushroom_block 95704f red_mushroom_block b62a26 mushroom_stem cbc4b9 brown_mushroom 9a7556 red_mushroom c8302a
+poppy c0272d dandelion f1d900 blue_orchid 2aa0d0 allium b878e0 azure_bluet d8e0e6 red_tulip c4342a orange_tulip e07a2a white_tulip e2e8e0 pink_tulip e6a9c9 oxeye_daisy e8e8d0 cornflower 4b6ac6 lily_of_the_valley f0f0ec sunflower f3c41b lilac b28bb5 rose_bush a9252b peony e9b8e1 wither_rose 222018 torchflower d9772a pitcher_plant 6b8fbf pink_petals ec9ec2 wildflowers e8d870 spore_blossom d76fa0 azalea 5f7f2c flowering_azalea 7f7a4a big_dripleaf 6a9a2a big_dripleaf_stem 6a9a2a small_dripleaf 6a9a2a hanging_roots 8e6a5a leaf_litter 9a6a3a
+wheat c8b05a carrots 6a9a2a potatoes 6a9a2a beetroots 6a8a2a melon_stem 6a8a2a pumpkin_stem 6a8a2a attached_melon_stem 6a8a2a attached_pumpkin_stem 6a8a2a nether_wart 8e1b1b torchflower_crop 6a8a2a pitcher_crop 6a8a2a
+oak_sapling 4f7a2a spruce_sapling 3b5e3b birch_sapling 6a8c42 jungle_sapling 3f8a1f acacia_sapling 6a7a2a dark_oak_sapling 3f6b22 cherry_sapling e5adc2 mangrove_propagule 5a8a3a pale_oak_sapling 8a9188 mangrove_roots 4f3a2a muddy_mangrove_roots 463b30
+`;
+const TABLE = new Map();
+{ const t = C_TABLE.trim().split(/\s+/); for (let i = 0; i < t.length; i += 2) TABLE.set(t[i], parseInt(t[i + 1], 16)); }
+
+const DYES = ['light_blue', 'light_gray', 'white', 'orange', 'magenta', 'yellow', 'lime', 'pink', 'gray', 'cyan', 'purple', 'blue', 'brown', 'green', 'red', 'black'];
+const dyeTable = s => { const v = s.split(' '); const o = {}; DYES.forEach((d, i) => o[d] = parseInt(v[i], 16)); return o; };
+//                      light_blue light_gray white orange magenta yellow lime pink gray cyan purple blue brown green red black
+const CONCRETE = dyeTable('2489c7 7d7d73 cfd5d6 e06101 a9309f f1af15 5ea918 d5658f 373a3e 157788 64209c 2d2f8f 603c20 495b24 8e2121 080a0f');
+const WOOL     = dyeTable('3aafd9 8e8e86 e9ecec f07613 bd44b3 f8c527 70b919 ed8dac 3e4447 158991 792aac 35399d 724728 546d1b a12722 141519');
+const TERRA    = dyeTable('706c8a 876a61 d1b2a1 a15325 95576c ba8523 677535 a14e4e 392a23 575b5b 764656 4a3b5b 4d3323 4c532a 8f3d2e 251610');
+
+const SHAPES = ['_wall_hanging_sign', '_hanging_sign', '_wall_sign', '_sign', '_pressure_plate', '_fence_gate', '_fence', '_trapdoor', '_door', '_button', '_stairs', '_slab', '_wall', '_pane'];
+const WOODS = ['dark_oak', 'pale_oak', 'poplar', 'oak', 'spruce', 'birch', 'jungle', 'acacia', 'mangrove', 'cherry', 'bamboo', 'crimson', 'warped'];
+const KEYWORDS = [
+  ['oxidized', 0x52a283], ['weathered', 0x6d9a75], ['exposed', 0xa17e68], ['copper', 0xc06c50],
+  ['dead_', 0x857e79], ['tube_coral', 0x3157cf], ['brain_coral', 0xcf5b9f], ['bubble_coral', 0xa21aa1], ['fire_coral', 0xa4232f], ['horn_coral', 0xd8c442],
+  ['leaves', 0x4b7a2a], ['sapling', 0x4f7a2a], ['_log', 0x8a6a40], ['redstone', 0xa01b10],
+  ['deepslate', 0x4d4d50], ['blackstone', 0x2a2329], ['basalt', 0x49484d], ['nether_brick', 0x2c1519], ['netherrack', 0x6f3534],
+  ['end_stone', 0xdbde9e], ['purpur', 0xa97ca9], ['prismarine', 0x63a698], ['quartz', 0xece6df], ['red_sandstone', 0xb5621f], ['sandstone', 0xd8cb9b],
+  ['mud_brick', 0x8a6a4f], ['tuff', 0x6c6d66], ['resin', 0xc9652a], ['brick', 0x966153], ['amethyst', 0x8561c0], ['sculk', 0x0c2a33],
+  ['froglight', 0xf0e6c0], ['torch', 0xe0b050], ['lantern', 0x6a5a4a], ['candle', 0xe6d3a3], ['rail', 0x7b6a4e], ['shulker', 0x8b6a8b],
+  ['head', 0x6a6a6a], ['skull', 0xc8c8b8], ['glass', 0xc3dfe3], ['ice', 0x91b7fd], ['snow', 0xf4f9fb], ['iron', 0xb8b8b8], ['gold', 0xe8c23a],
+  ['stone', 0x7d7d7d], ['cobble', 0x7a7a7a], ['mushroom', 0x9a7556], ['grass', 0x5f8f3c], ['dirt', 0x866043], ['sand', 0xdbcfa3],
+];
+
+const shade = (c, f) => (Math.min(255, ((c >> 16) & 255) * f) << 16) | (Math.min(255, ((c >> 8) & 255) * f) << 8) | Math.min(255, (c & 255) * f);
+const mixInt = (a, b, t) => {
+  const r = ((a >> 16) & 255) * (1 - t) + ((b >> 16) & 255) * t;
+  const g = ((a >> 8) & 255) * (1 - t) + ((b >> 8) & 255) * t;
+  const bl = (a & 255) * (1 - t) + (b & 255) * t;
+  return (r << 16) | (g << 8) | bl;
+};
+const lookupBase = b => TABLE.get(b) ?? TABLE.get(b + 's') ?? TABLE.get(b + '_planks') ?? TABLE.get(b + '_block') ??
+  TABLE.get(b.replace(/_brick$/, '_bricks')) ?? TABLE.get(b.replace(/_tile$/, '_tiles'));
+
+function resolveDye(n) {
+  for (const d of DYES) {
+    if (!n.startsWith(d + '_')) continue;
+    const r = n.slice(d.length + 1);
+    if (r.includes('terracotta')) return TERRA[d];
+    if (r.includes('concrete') || r.includes('shulker') || r.includes('candle')) return CONCRETE[d];
+    if (r.includes('stained_glass')) return mixInt(WOOL[d], 0xffffff, 0.22);
+    if (/wool|carpet|bed|banner/.test(r)) return WOOL[d];
+    return undefined;
+  }
+  return undefined;
+}
+function keyword(n) {
+  if (n.endsWith('_ore')) return 0x7d7d7d;
+  for (const [k, c] of KEYWORDS) if (n.includes(k)) return c;
+  for (const w of WOODS) if (n.includes(w)) return TABLE.get(w + '_planks');
+  return undefined;
+}
+function resolveColor(n) {
+  let c = TABLE.get(n);
+  if (c !== undefined) return c;
+  if (n.startsWith('stripped_')) return resolveColor(n.slice(9));
+  if (n.startsWith('waxed_')) return resolveColor(n.slice(6));
+  if (n.startsWith('potted_')) return TABLE.get('flower_pot');
+  if (n.startsWith('infested_')) return resolveColor(n.slice(9));
+  if (n.endsWith('_wood')) { c = TABLE.get(n.slice(0, -5) + '_log'); if (c !== undefined) return shade(c, 0.82); }
+  if (n.endsWith('_hyphae')) { c = TABLE.get(n.slice(0, -7) + '_stem'); if (c !== undefined) return shade(c, 0.82); }
+  for (const s of SHAPES) {
+    if (!n.endsWith(s)) continue;
+    const b = n.slice(0, -s.length);
+    c = lookupBase(b) ?? resolveDye(b) ?? keyword(b);
+    if (c !== undefined) return c;
+    break;
+  }
+  return resolveDye(n) ?? keyword(n) ?? 0x8b8b8b;
+}
+const COLOR_CACHE = new Map();
+function colorFor(full) {
+  let c = COLOR_CACHE.get(full);
+  if (c === undefined) { c = resolveColor(shortName(full)); COLOR_CACHE.set(full, c); }
+  return c;
+}
+
+// ---- Chunk decoding ----
+function lz4Block(src, dlen) {
+  const dst = new Uint8Array(dlen); let s = 0, d = 0;
+  while (s < src.length) {
+    const tok = src[s++]; let lit = tok >> 4;
+    if (lit === 15) { let b; do { b = src[s++]; lit += b; } while (b === 255); }
+    dst.set(src.subarray(s, s + lit), d); s += lit; d += lit;
+    if (s >= src.length) break;
+    const off = src[s] | (src[s + 1] << 8); s += 2;
+    let ml = tok & 15; if (ml === 15) { let b; do { b = src[s++]; ml += b; } while (b === 255); }
+    ml += 4; let m = d - off; while (ml--) dst[d++] = dst[m++];
+  }
+  return dst;
+}
+// Minecraft's LZ4 option uses lz4-java's "LZ4Block" stream framing.
+function lz4Java(u8) {
+  const parts = []; let p = 0, total = 0;
+  const le = i => (u8[i] | (u8[i + 1] << 8) | (u8[i + 2] << 16) | (u8[i + 3] << 24)) >>> 0;
+  while (p + 21 <= u8.length) {
+    p += 8; const method = u8[p++] & 0xF0;
+    const clen = le(p), dlen = le(p + 4); p += 12;
+    if (dlen === 0) break;
+    const src = u8.subarray(p, p + clen); p += clen;
+    parts.push(method === 0x10 ? src : lz4Block(src, dlen)); total += dlen;
+  }
+  const out = new Uint8Array(total); let o = 0;
+  for (const part of parts) { out.set(part, o); o += part.length; }
+  return out;
+}
+async function decodeChunk(data, ct, stats) {
+  if (ct & 128) { stats.external++; return null; }
+  let raw;
+  if (ct === 2) raw = await inflate(data, 'deflate');
+  else if (ct === 1) raw = await inflate(data, 'gzip');
+  else if (ct === 3) raw = data;
+  else if (ct === 4) raw = lz4Java(data);
+  else { stats.errors++; return null; }
+  return NBT.parse(raw);
+}
+
+// Read one palette index from a packed long array (stored as [hi, lo] halves).
+function bitsAt(L, li, off, bits) {
+  const mask = (1 << bits) - 1, hi = L[li * 2], lo = L[li * 2 + 1];
+  if (off + bits <= 32) return (lo >>> off) & mask;
+  if (off >= 32) return (hi >>> (off - 32)) & mask;
+  return ((lo >>> off) | (hi << (32 - off))) & mask;
+}
+function makeReader(data, n) {
+  if (n <= 1 || !data || !data.length) return () => 0;
+  const bits = Math.max(4, Math.ceil(Math.log2(n)));
+  const longs = data.length / 2;
+  if (64 % bits !== 0 && longs === bits * 64) {
+    // 1.13–1.15: values may straddle two longs
+    return i => {
+      const bi = i * bits, li = bi >>> 6, off = bi & 63;
+      if (off + bits <= 64) return bitsAt(data, li, off, bits);
+      const lowBits = 64 - off;
+      return bitsAt(data, li, off, lowBits) | (bitsAt(data, li + 1, 0, bits - lowBits) << lowBits);
+    };
+  }
+  const vpl = Math.floor(64 / bits);
+  if (longs < Math.ceil(4096 / vpl)) return null;
+  return i => { const li = (i / vpl) | 0; return bitsAt(data, li, (i - li * vpl) * bits, bits); };
+}
+
+// Biomes are stored per 4×4×4 cell, 64 per section. Returns (column, localY) → tint colour or -1.
+function sectionBiomeTints(b) {
+  if (!b || !Array.isArray(b.palette) || !b.palette.length) return null;
+  const tints = b.palette.map(e => BIOME_GRASS.get(shortName(String(typeof e === 'string' ? e : e.Name ?? e.id ?? e['']))) ?? -1);
+  if (tints.every(t => t < 0)) return null;
+  const n = tints.length;
+  if (n === 1 || !b.data || !b.data.length) return () => tints[0];
+  const bits = Math.ceil(Math.log2(n)), vpl = Math.floor(64 / bits);
+  if (b.data.length / 2 < Math.ceil(64 / vpl)) return null;
+  return (c, ly) => {
+    const i = (ly >> 2) * 16 + ((c >> 4) >> 2) * 4 + ((c & 15) >> 2), li = (i / vpl) | 0;
+    return tints[bitsAt(b.data, li, (i - li * vpl) * bits, bits)] ?? -1;
+  };
+}
+
+function newCtx(dim) {
+  const N = 512 * 512;
+  return {
+    dim, rp: new Palette(),
+    tint: new Int32Array(N).fill(-1), blocks: new Uint16Array(N), heights: new Int16Array(N).fill(EMPTY), depth: new Uint8Array(N), floor: new Uint16Array(N).fill(NONE),
+    stats: { chunks: 0, legacy: 0, external: 0, errors: 0 },
+  };
+}
+
+function processChunk(root, cx, cz, C) {
+  const level = root.Level || root;
+  if (typeof level.Status === 'string' && !FULL.has(shortName(level.Status))) return;
+  const secs = root.sections || level.Sections;
+  if (!Array.isArray(secs)) return;
+  const list = [];
+  let legacy = false;
+  for (const s of secs) {
+    let pal, data;
+    if (s.block_states) { pal = s.block_states.palette; data = s.block_states.data; }
+    else if (s.Palette) { pal = s.Palette; data = s.BlockStates; }
+    else { if (s.Blocks) legacy = true; continue; }
+    if (Array.isArray(pal) && pal.length) list.push({ Y: s.Y, pal, data, biomes: s.biomes });
+  }
+  if (!list.length) { if (legacy) C.stats.legacy++; return; }
+  list.sort((a, b) => b.Y - a.Y);
+
+  const nether = C.dim === 'nether';
+  const ceiling = nether ? 120 : 1e9;
+  const phase = new Int8Array(256).fill(nether ? -1 : 0); // -1 under nether roof, 0 searching, 1 in water, 2 done
+  const topY = new Int16Array(256), topId = new Uint16Array(256), wTop = new Int16Array(256), wDepth = new Uint8Array(256);
+  const fId = new Uint16Array(256).fill(NONE), tint = new Int32Array(256).fill(-1);
+  let remaining = 256, prevY = null;
+
+  for (const s of list) {
+    if (!remaining) break;
+    if (nether && prevY !== null && prevY - s.Y > 1) for (let c = 0; c < 256; c++) if (phase[c] === -1) phase[c] = 0;
+    prevY = s.Y;
+    // Palette entries: {Name, Properties} before 26.x; since then a bare string, {id, properties}, or {'': name} in mixed lists
+    const n = s.pal.length, ids = new Uint16Array(n), kind = new Uint8Array(n);
+    for (let i = 0; i < n; i++) { const e = s.pal[i]; ids[i] = C.rp.id(String(typeof e === 'string' ? e : e.Name ?? e.id ?? e[''])); kind[i] = C.rp.kind[ids[i]]; }
+    if (n === 1 && kind[0] === 1) { if (nether) for (let c = 0; c < 256; c++) if (phase[c] === -1) phase[c] = 0; continue; }
+    const get = makeReader(s.data, n);
+    if (!get) continue;
+    const biomeTint = sectionBiomeTints(s.biomes);
+    const baseY = s.Y * 16;
+    for (let c = 0; c < 256; c++) {
+      if (phase[c] === 2) continue;
+      for (let ly = 15; ly >= 0; ly--) {
+        const y = baseY + ly;
+        if (y > ceiling) continue;
+        const pi = get(ly * 256 + c);
+        if (pi >= n) continue;
+        const k = kind[pi], ph = phase[c];
+        if (ph === -1) { if (k === 1) phase[c] = 0; continue; }
+        if (k === 1) continue;
+        if (ph === 0) {
+          if (k === 2) { phase[c] = 1; wTop[c] = y; wDepth[c] = 1; topId[c] = ids[pi]; continue; }
+          topY[c] = y; topId[c] = ids[pi]; phase[c] = 2; remaining--;
+          if (biomeTint && GRASSY.has(shortName(C.rp.names[ids[pi]]))) tint[c] = biomeTint(c, ly);
+          break;
+        }
+        if (k === 2) { if (++wDepth[c] >= MAXD) { phase[c] = 2; remaining--; break; } continue; }
+        fId[c] = ids[pi]; phase[c] = 2; remaining--; break;
+      }
+    }
+  }
+
+  let any = false;
+  for (let c = 0; c < 256; c++) {
+    const idx = (cz * 16 + (c >> 4)) * 512 + cx * 16 + (c & 15);
+    if (wDepth[c] > 0) {
+      C.heights[idx] = wTop[c]; C.blocks[idx] = topId[c]; C.depth[idx] = wDepth[c]; C.floor[idx] = fId[c]; any = true;
+    } else if (phase[c] === 2) {
+      C.heights[idx] = topY[c]; C.blocks[idx] = topId[c]; C.tint[idx] = tint[c]; any = true;
+    }
+  }
+  if (any) C.stats.chunks++;
+}
+
+const WATER_C = 0x3b66c4, DEEP_C = 0x1b2c66;
+const grain = (x, z) => { let h = (x * 374761393 + z * 668265263) | 0; h = Math.imul(h ^ (h >>> 13), 1274126177); return ((h ^ (h >>> 16)) >>> 0) / 4294967296; };
+
+function finish(C) {
+  const N = 512, rgba = new Uint8ClampedArray(N * N * 4);
+  const { blocks, heights, depth, floor } = C;
+  const cols = C.rp.names.map(colorFor);
+  for (let z = 0; z < N; z++) for (let x = 0; x < N; x++) {
+    const i = z * N + x, h = heights[i];
+    if (h === EMPTY) continue;
+    let c, f;
+    const d = depth[i];
+    if (d > 0) {
+      const fc = floor[i] !== NONE ? cols[floor[i]] : DEEP_C;
+      c = mixInt(fc, WATER_C, Math.min(0.94, 0.42 + d * 0.05));
+      f = 1 - (Math.min(d, 40) / 40) * 0.4;
+    } else {
+      c = C.tint[i] >= 0 ? C.tint[i] : cols[blocks[i]];
+      const hn = z > 0 && heights[i - N] !== EMPTY ? heights[i - N] : h;
+      const hw = x > 0 && heights[i - 1] !== EMPTY ? heights[i - 1] : h;
+      const dd = (h - hn) + (h - hw) * 0.5;
+      f = (1 + Math.max(-0.32, Math.min(0.22, dd * 0.075))) * (0.97 + grain(x, z) * 0.06);
+    }
+    const o = i * 4;
+    rgba[o] = ((c >> 16) & 255) * f; rgba[o + 1] = ((c >> 8) & 255) * f; rgba[o + 2] = (c & 255) * f; rgba[o + 3] = 255;
+  }
+  return { rgba, blocks, heights, depth, palette: C.rp.names, stats: C.stats };
+}
+
+async function renderRegion(u8, dim) {
+  const C = newCtx(dim);
+  if (u8.length >= 8192) {
+    const jobs = [];
+    for (let i = 0; i < 1024; i++) {
+      const off = ((u8[i * 4] << 16) | (u8[i * 4 + 1] << 8) | u8[i * 4 + 2]) * 4096;
+      if (!off) continue;
+      if (off + 5 > u8.length) { C.stats.errors++; continue; }
+      const len = ((u8[off] << 24) >>> 0) + (u8[off + 1] << 16) + (u8[off + 2] << 8) + u8[off + 3];
+      if (len < 1 || off + 4 + len > u8.length) { C.stats.errors++; continue; }
+      const data = u8.subarray(off + 5, off + 4 + len);
+      jobs.push(decodeChunk(data, u8[off + 4], C.stats)
+        .then(root => { if (root) processChunk(root, i & 31, i >> 5, C); })
+        .catch(() => { C.stats.errors++; }));
+    }
+    await Promise.all(jobs);
+  }
+  return finish(C);
+}
+
+// ---- Sample terrain, used for the preview before a world is loaded ----
+function hash2(x, z, s) { let h = (Math.imul(x, 374761393) + Math.imul(z, 668265263) + Math.imul(s, 1442695041)) | 0; h = Math.imul(h ^ (h >>> 13), 1274126177); return ((h ^ (h >>> 16)) >>> 0) / 4294967296; }
+function vnoise(x, z, s) {
+  const xi = Math.floor(x), zi = Math.floor(z), xf = x - xi, zf = z - zi;
+  const u = xf * xf * (3 - 2 * xf), v = zf * zf * (3 - 2 * zf);
+  const a = hash2(xi, zi, s), b = hash2(xi + 1, zi, s), c = hash2(xi, zi + 1, s), d = hash2(xi + 1, zi + 1, s);
+  return a + (b - a) * u + (c - a) * v + (a - b - c + d) * u * v;
+}
+function fbm(x, z, s, oct) { let sum = 0, amp = 1, f = 1, norm = 0; for (let i = 0; i < oct; i++) { sum += amp * vnoise(x * f, z * f, s + i * 17); norm += amp; amp *= 0.5; f *= 2.03; } return sum / norm; }
+const FLOWERS = ['poppy', 'dandelion', 'cornflower', 'oxeye_daisy', 'azure_bluet', 'allium'];
+
+function renderSample(rx, rz) {
+  const C = newCtx('overworld');
+  const id = n => C.rp.id('minecraft:' + n);
+  const water = id('water');
+  for (let cz = 0; cz < 32; cz++) for (let cx = 0; cx < 32; cx++) {
+    const wcx = rx * 32 + cx, wcz = rz * 32 + cz;
+    const edge = 800 + (fbm(wcx / 14, wcz / 14, 41, 3) - 0.5) * 420;
+    if (Math.hypot(wcx * 16 + 8, wcz * 16 + 8) > edge) continue;
+    C.stats.chunks++;
+    for (let z = 0; z < 16; z++) for (let x = 0; x < 16; x++) {
+      const wx = wcx * 16 + x, wz = wcz * 16 + z, i = (cz * 16 + z) * 512 + cx * 16 + x;
+      const X = wx + 900, Z = wz - 300;
+      const e = fbm(X / 430, Z / 430, 1, 5);
+      let h = 63 + (e - 0.46) * 170;
+      if (h > 70) h += Math.pow(Math.max(0, fbm(X / 150, Z / 150, 7, 4) - 0.45), 1.35) * 270 * Math.min(1, (h - 70) / 25);
+      const riv = Math.abs(fbm(X / 260, Z / 260, 3, 4) - 0.5);
+      if (riv < 0.014 && h >= 62 && h < 105) h = 57 + (riv / 0.014) * 5;
+      h = Math.round(h);
+      const temp = fbm(X / 700, Z / 700, 9, 3);
+      const r = hash2(wx, wz, 5);
+      if (h < 62) {
+        const d = 62 - h;
+        if (temp < 0.3 && d < 4) { C.heights[i] = 62; C.blocks[i] = id('ice'); continue; }
+        C.heights[i] = 62; C.blocks[i] = water; C.depth[i] = Math.min(d, MAXD);
+        C.floor[i] = id(d > 16 || temp < 0.4 ? 'gravel' : r < 0.06 ? 'clay' : 'sand');
+        continue;
+      }
+      const snowy = temp < 0.3, desert = temp > 0.64;
+      let top = h, block;
+      if (h <= 64 && !snowy) block = 'sand';
+      else if (desert) block = h > 96 ? 'sandstone' : r < 0.003 ? 'cactus' : 'sand';
+      else if (h >= 150) block = 'snow_block';
+      else if (h >= 116) block = r < 0.15 ? 'gravel' : 'stone';
+      else block = snowy ? 'snow' : 'grass_block';
+      if (!desert && h > 64 && h < 116) {
+        const dens = fbm(X / 110, Z / 110, 5, 3);
+        if (dens > 0.42) {
+          const gx = Math.floor(wx / 5), gz = Math.floor(wz / 5);
+          let found = false;
+          for (let oz = -1; oz <= 1 && !found; oz++) for (let ox = -1; ox <= 1; ox++) {
+            const tx = gx + ox, tz = gz + oz;
+            if (hash2(tx, tz, 77) > (dens - 0.42) * 4.5) continue;
+            const px = tx * 5 + 1 + hash2(tx, tz, 78) * 3, pz = tz * 5 + 1 + hash2(tx, tz, 79) * 3;
+            const dist = Math.hypot(wx + 0.5 - px, wz + 0.5 - pz);
+            if (dist < (snowy ? 1.9 : 2.4)) {
+              found = true; top = h + 5 + (dist < 1 ? 1 : 0);
+              const kindN = hash2(tx, tz, 80);
+              block = snowy ? 'spruce_leaves' : dens > 0.6 ? 'dark_oak_leaves' : kindN < 0.25 ? 'birch_leaves' : 'oak_leaves';
+              break;
+            }
+          }
+        } else if (block === 'grass_block' && r < 0.012) block = FLOWERS[Math.floor(hash2(wx, wz, 9) * FLOWERS.length)];
+      }
+      C.heights[i] = top; C.blocks[i] = id(block);
+    }
+  }
+  return finish(C);
+}
+
+self.onmessage = async (e) => {
+  const m = e.data;
+  try {
+    const res = m.type === 'sample' ? renderSample(m.rx, m.rz) : await renderRegion(new Uint8Array(m.buffer), m.dim);
+    self.postMessage({ id: m.id, ok: true, ...res }, [res.rgba.buffer, res.blocks.buffer, res.heights.buffer, res.depth.buffer]);
+  } catch (err) {
+    self.postMessage({ id: m.id, ok: false, error: String((err && err.message) || err) });
+  }
+};
+</script>
+
+<script>
+(() => {
+const $ = s => document.querySelector(s);
+const fmt = n => n.toLocaleString();
+const canvas = $('#map'), ctx = canvas.getContext('2d');
+let dpr = 1, cw = 0, ch = 0;
+const CANCEL = Symbol('cancel');
+
+// ---- Worker pool ----
+const workerURL = URL.createObjectURL(new Blob([$('#core').textContent, '\n', $('#worker-src').textContent], { type: 'text/javascript' }));
+const pool = (() => {
+  const size = Math.max(1, Math.min(4, (navigator.hardwareConcurrency || 4) - 1));
+  const idle = [], queue = [], pending = new Map();
+  let seq = 0;
+  const done = (w, id, fn) => { const p = pending.get(id); pending.delete(id); w.job = null; idle.push(w); pump(); if (p) fn(p); };
+  for (let i = 0; i < size; i++) {
+    const w = new Worker(workerURL);
+    w.onmessage = e => done(w, e.data.id, p => e.data.ok ? p.resolve(e.data) : p.reject(new Error(e.data.error)));
+    w.onerror = ev => { ev.preventDefault(); if (w.job) done(w, w.job, p => p.reject(new Error(ev.message || 'Worker error'))); };
+    idle.push(w);
+  }
+  function pump() {
+    while (idle.length && queue.length) {
+      const job = queue.shift(), w = idle.pop();
+      job(w);
+    }
+  }
+  function run(prepare) {
+    return new Promise((resolve, reject) => {
+      queue.push(async w => {
+        try {
+          const { msg, transfer } = await prepare();
+          const id = ++seq; msg.id = id; w.job = id;
+          pending.set(id, { resolve, reject });
+          w.postMessage(msg, transfer || []);
+        } catch (err) { idle.push(w); pump(); reject(err); }
+      });
+      pump();
+    });
+  }
+  return { run, clear: () => { queue.length = 0; } };
+})();
+
+// ---- State ----
+const S = { gen: 0, dims: [], cur: null, sample: true, grid: false, published: null };
+const KIND_LABEL = { overworld: 'Overworld', nether: 'Nether', end: 'The End' };
+
+function makeDim(key, label, kind, root, files) {
+  return { key, label, kind, root, files, regions: new Map(), started: false, done: 0, chunks: 0, failed: 0, legacy: 0, external: 0, errors: 0, players: [], spawn: null, view: null };
+}
+
+function medianView(d) {
+  if (!d.files.length) return { cx: 0, cz: 0, scale: 1 };
+  const xs = d.files.map(f => f.rx).sort((a, b) => a - b), zs = d.files.map(f => f.rz).sort((a, b) => a - b);
+  const m = a => a[a.length >> 1];
+  return { cx: m(xs) * 512 + 256, cz: m(zs) * 512 + 256, scale: 1 };
+}
+
+function startDim(d) {
+  if (d.started) return;
+  d.started = true;
+  const gen = S.gen, v = d.view;
+  const dist = f => (f.rx * 512 + 256 - v.cx) ** 2 + (f.rz * 512 + 256 - v.cz) ** 2;
+  for (const f of [...d.files].sort((a, b) => dist(a) - dist(b))) {
+    (f.url ? fetchLimit(() => loadPublished(f)) : pool.run(async () => {
+      if (gen !== S.gen) throw CANCEL;
+      if (f.sample) return { msg: { type: 'sample', rx: f.rx, rz: f.rz } };
+      const buffer = await f.entry.read();
+      return { msg: { type: 'region', buffer, dim: d.kind }, transfer: [buffer] };
+    }))
+      .then(res => { if (gen === S.gen) addRegion(d, f, res); })
+      .catch(err => { if (err !== CANCEL && gen === S.gen) { d.failed++; console.warn('Region failed', f, err); } })
+      .finally(() => {
+        if (gen !== S.gen) return;
+        f.done = true; d.done++;
+        if (d === S.cur) { updateStatus(); requestDraw(); }
+      });
+  }
+}
+
+function addRegion(d, f, res) {
+  const st = res.stats;
+  d.chunks += st.chunks; d.legacy += st.legacy; d.external += st.external; d.errors += st.errors;
+  if (!st.chunks) return;
+  const c = document.createElement('canvas'); c.width = c.height = 512;
+  if (res.image) c.getContext('2d').drawImage(res.image, 0, 0);
+  else c.getContext('2d').putImageData(new ImageData(res.rgba, 512, 512), 0, 0);
+  const sm = document.createElement('canvas'); sm.width = sm.height = 64;
+  const sx = sm.getContext('2d'); sx.imageSmoothingQuality = 'high'; sx.drawImage(c, 0, 0, 64, 64);
+  d.regions.set(f.rx + ',' + f.rz, { rx: f.rx, rz: f.rz, canvas: c, small: sm, blocks: res.blocks, heights: res.heights, depth: res.depth, palette: res.palette });
+}
+
+// ---- Published map: pre-rendered regions served next to the page (see build-map.mjs) ----
+function makeLimiter(n) {
+  let active = 0; const waiting = [];
+  const next = () => { if (active < n && waiting.length) { active++; const [fn, res, rej] = waiting.shift(); fn().then(res, rej).finally(() => { active--; next(); }); } };
+  return fn => new Promise((res, rej) => { waiting.push([fn, res, rej]); next(); });
+}
+const fetchLimit = makeLimiter(6);
+async function fetchOk(url) { const r = await fetch(url); if (!r.ok) throw new Error(`${url}: ${r.status}`); return r; }
+async function loadPublished(f) {
+  const [image, bin] = await Promise.all([
+    fetchOk(f.url + '.png').then(r => r.blob()).then(b => createImageBitmap(b)),
+    fetchOk(f.url + '.bin.gz').then(r => r.arrayBuffer()),
+  ]);
+  let u8 = new Uint8Array(bin);
+  if (u8[0] === 0x1f && u8[1] === 0x8b) u8 = await inflate(u8, 'gzip'); // some hosts already decompress it
+  const N = 512 * 512, dv = new DataView(u8.buffer, u8.byteOffset, u8.byteLength);
+  const plen = dv.getUint32(4, true);
+  const palette = JSON.parse(new TextDecoder().decode(u8.subarray(8, 8 + plen)));
+  let o = 8 + plen;
+  const take = bytes => { const b = u8.slice(o, o + bytes).buffer; o += bytes; return b; };
+  const blocks = new Uint16Array(take(N * 2)), heights = new Int16Array(take(N * 2)), depth = new Uint8Array(take(N));
+  return { image, blocks, heights, depth, palette, stats: { chunks: f.chunks, legacy: 0, external: 0, errors: 0 } };
+}
+function loadManifest(m) {
+  const dims = m.dims.map(dm => {
+    const files = dm.regions.map(([rx, rz, chunks]) => ({ rx, rz, chunks, url: `map/${dm.key}/r.${rx}.${rz}` }));
+    const d = makeDim(dm.key, dm.label, dm.kind, '', files);
+    if (dm.spawn) { d.spawn = dm.spawn; d.view = { cx: dm.spawn.x, cz: dm.spawn.z, scale: 1 }; }
+    return d;
+  });
+  S.gen++; pool.clear();
+  S.dims = dims; S.sample = false; S.published = m;
+  $('#world-name').textContent = m.name;
+  $('#world-chip').textContent = 'Mapped ' + new Date(m.generated).toLocaleDateString(undefined, { day: 'numeric', month: 'short', year: 'numeric' });
+  selectDim(dims[0]);
+}
+async function boot() {
+  let m = null;
+  try { const r = await fetch('map/manifest.json', { cache: 'no-cache' }); if (r.ok) m = await r.json(); } catch { /* opened as a local file, or no published map */ }
+  if (m && m.dims && m.dims.length) loadManifest(m); else loadSample();
+}
+
+function selectDim(d) {
+  S.cur = d;
+  if (!d.view) d.view = medianView(d);
+  startDim(d);
+  renderTabs(); updateStatus(); updateZoomLabel(); requestDraw();
+}
+
+// ---- Loading a world ----
+function loadSample() {
+  const files = [];
+  for (let rz = -2; rz <= 1; rz++) for (let rx = -2; rx <= 1; rx++) files.push({ rx, rz, sample: true });
+  const d = makeDim('sample', 'Overworld', 'overworld', '', files);
+  d.spawn = { x: 0, z: 0 };
+  d.view = { cx: 0, cz: 0, scale: 0.75 };
+  S.dims = [d]; S.sample = true;
+  $('#world-name').textContent = 'Sample terrain';
+  $('#world-chip').textContent = 'Example'; $('#world-chip').hidden = false;
+  selectDim(d);
+}
+
+const SKIP_DIRS = new Set(['entities', 'poi', 'stats', 'advancements', 'datapacks', 'logs', 'libraries', 'plugins', 'cache', 'versions', 'crash-reports', 'bundler', 'config', 'mods', '.git']);
+
+function classify(parent) {
+  const segs = parent ? parent.split('/') : [];
+  const last = segs[segs.length - 1];
+  if (last === 'DIM-1') return { kind: 'nether', root: segs.slice(0, -1).join('/') };
+  if (last === 'DIM1') return { kind: 'end', root: segs.slice(0, -1).join('/') };
+  const di = segs.lastIndexOf('dimensions');
+  if (di >= 0 && segs.length - di === 3) {
+    const id = segs[di + 1] + ':' + segs[di + 2], root = segs.slice(0, di).join('/');
+    if (id === 'minecraft:overworld') return { kind: 'overworld', root };
+    if (id === 'minecraft:the_nether') return { kind: 'nether', root };
+    if (id === 'minecraft:the_end') return { kind: 'end', root };
+    return { kind: 'custom', root, label: segs[di + 2].replace(/_/g, ' ').replace(/\b\w/g, m => m.toUpperCase()) };
+  }
+  return { kind: 'overworld', root: parent };
+}
+function dimKindOf(v) {
+  if (v === 0 || v === 'minecraft:overworld') return 'overworld';
+  if (v === -1 || v === 'minecraft:the_nether') return 'nether';
+  if (v === 1 || v === 'minecraft:the_end') return 'end';
+  return typeof v === 'string' ? v : 'overworld';
+}
+
+async function readDat(entry) {
+  const u8 = new Uint8Array(await entry.read());
+  return NBT.parse(u8[0] === 0x1f && u8[1] === 0x8b ? await inflate(u8, 'gzip') : u8);
+}
+
+async function ingest(entries) {
+  const groups = new Map();
+  let levelDat = null, usercache = null;
+  const playerFiles = [];
+  for (const e of entries) {
+    const path = e.path.replace(/\\/g, '/').replace(/^\/+/, '');
+    const parts = path.split('/'), name = parts[parts.length - 1];
+    const m = name.match(/^r\.(-?\d+)\.(-?\d+)\.mca$/);
+    if (m) {
+      if (parts.length >= 2 && parts[parts.length - 2] !== 'region') continue;
+      const parent = parts.slice(0, -2).join('/');
+      if (!groups.has(parent)) groups.set(parent, []);
+      groups.get(parent).push({ rx: +m[1], rz: +m[2], entry: e });
+    } else if (name === 'level.dat') {
+      if (!levelDat || path.length < levelDat.path.length) levelDat = { ...e, path };
+    } else if (name === 'usercache.json') usercache = e;
+    else if ((parts[parts.length - 2] === 'playerdata' || parts.slice(-3, -1).join('/') === 'players/data') && /^[0-9a-f-]{36}\.dat$/i.test(name)) playerFiles.push({ ...e, path, uuid: name.slice(0, 36) });
+  }
+  if (!groups.size) throw new Error('No region files found. Pick the world folder itself, the one that contains level.dat and a region folder.');
+
+  const primaryRoot = levelDat ? levelDat.path.split('/').slice(0, -1).join('/') : null;
+  let dims = [...groups].map(([parent, files]) => {
+    const c = classify(parent);
+    return makeDim(parent, c.label || KIND_LABEL[c.kind], c.kind, c.root, files);
+  });
+  // Disambiguate when several worlds are in one upload
+  const seen = new Map();
+  dims.forEach(d => seen.set(d.label, (seen.get(d.label) || 0) + 1));
+  dims.forEach(d => { if (seen.get(d.label) > 1) d.label += ' · ' + (d.root.split('/').pop() || 'world'); });
+  const rank = d => (d.root === primaryRoot || (primaryRoot !== null && d.root.replace(/_(nether|the_end)$/, '') === primaryRoot) ? 0 : 10) + ({ overworld: 0, nether: 1, end: 2 }[d.kind] ?? 3);
+  dims.sort((a, b) => rank(a) - rank(b));
+
+  let worldName = null, version = null, spawn = null;
+  const players = [];
+  if (levelDat) {
+    try {
+      const data = (await readDat(levelDat)).Data || {};
+      worldName = data.LevelName || null;
+      version = data.Version && data.Version.Name;
+      if (typeof data.SpawnX === 'number') spawn = { x: data.SpawnX, z: data.SpawnZ };
+      else if (data.spawn && data.spawn.pos) spawn = { x: data.spawn.pos[0], z: data.spawn.pos[2] };
+      if (data.Player && data.Player.Pos) players.push({ name: 'You', pos: data.Player.Pos, kind: dimKindOf(data.Player.Dimension) });
+    } catch (err) { console.warn('level.dat', err); }
+  }
+  if (playerFiles.length) {
+    const names = new Map();
+    if (usercache) {
+      try { for (const u of JSON.parse(new TextDecoder().decode(await usercache.read()))) names.set(u.uuid, u.name); } catch (err) { /* names stay as short IDs */ }
+    }
+    const read = await Promise.all(playerFiles.slice(0, 300).map(async f => {
+      try { const p = await readDat(f); return p.Pos ? { name: names.get(f.uuid) || f.uuid.slice(0, 8), pos: p.Pos, kind: dimKindOf(p.Dimension) } : null; }
+      catch { return null; }
+    }));
+    players.push(...read.filter(Boolean));
+  }
+  for (const p of players) {
+    const d = dims.find(d => d.kind === p.kind);
+    if (d) d.players.push({ name: p.name, x: p.pos[0], z: p.pos[2] });
+  }
+  const over = dims.find(d => d.kind === 'overworld');
+  if (spawn && over) { over.spawn = spawn; over.view = { cx: spawn.x, cz: spawn.z, scale: 1 }; }
+
+  S.gen++; pool.clear();
+  S.dims = dims; S.sample = false; S.published = null;
+  $('#world-name').textContent = worldName || (primaryRoot ? primaryRoot.split('/').pop() : 'Region files');
+  $('#world-chip').textContent = version ? 'Java ' + version : 'Java';
+  selectDim(dims[0]);
+}
+
+async function run(task) {
+  $('#load-error').textContent = '';
+  try {
+    closeSheet('#load-sheet');
+    setStatusText('Reading files…');
+    await task();
+  } catch (err) {
+    console.error(err);
+    openSheet('#load-sheet');
+    $('#load-error').textContent = err.message || String(err);
+    updateStatus();
+  }
+}
+const fileEntry = f => ({ path: f.webkitRelativePath || f.name, read: () => f.arrayBuffer() });
+
+async function zipEntries(file) {
+  if (!window.JSZip) throw new Error("The zip reader didn't load. Check your connection, or pick the unzipped world folder instead.");
+  let zip;
+  try { zip = await JSZip.loadAsync(file); }
+  catch { throw new Error("That file isn't a readable .zip. Try picking the unzipped world folder instead."); }
+  const out = [];
+  zip.forEach((path, zf) => { if (!zf.dir) out.push({ path, read: () => zf.async('arraybuffer') }); });
+  return out;
+}
+
+async function walk(entry, out) {
+  if (entry.isFile) {
+    const file = await new Promise((res, rej) => entry.file(res, rej));
+    out.push({ path: entry.fullPath.replace(/^\/+/, ''), read: () => file.arrayBuffer(), file });
+  } else if (entry.isDirectory) {
+    if (SKIP_DIRS.has(entry.name)) return;
+    const reader = entry.createReader();
+    for (;;) {
+      const batch = await new Promise((res, rej) => reader.readEntries(res, rej));
+      if (!batch.length) break;
+      for (const b of batch) await walk(b, out);
+    }
+  }
+}
+
+// ---- Drawing ----
+let T = {};
+function readTheme() {
+  const cs = getComputedStyle(document.documentElement);
+  for (const k of ['void', 'pending', 'grid', 'grid-strong', 'marker', 'halo', 'ink', 'accent']) T[k] = cs.getPropertyValue('--' + k).trim();
+  requestDraw();
+}
+let drawQueued = false;
+function requestDraw() { if (!drawQueued) { drawQueued = true; requestAnimationFrame(draw); } }
+
+function draw() {
+  drawQueued = false;
+  ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+  ctx.fillStyle = T.void; ctx.fillRect(0, 0, cw, ch);
+  const d = S.cur; if (!d) return;
+  const { cx, cz, scale: s } = d.view;
+  const ox = cw / 2 - cx * s, oy = ch / 2 - cz * s, size = 512 * s;
+  const visible = (x, y) => x < cw && y < ch && x + size > 0 && y + size > 0;
+
+  ctx.fillStyle = T.pending;
+  for (const f of d.files) {
+    if (f.done) continue;
+    const x = f.rx * 512 * s + ox, y = f.rz * 512 * s + oy;
+    if (visible(x, y)) ctx.fillRect(Math.round(x) + 1, Math.round(y) + 1, Math.round(size) - 2, Math.round(size) - 2);
+  }
+  ctx.imageSmoothingEnabled = s < 1;
+  ctx.imageSmoothingQuality = 'medium';
+  for (const r of d.regions.values()) {
+    const x = r.rx * 512 * s + ox, y = r.rz * 512 * s + oy;
+    if (!visible(x, y)) continue;
+    const x0 = Math.round(x), y0 = Math.round(y);
+    ctx.drawImage(size <= 64 ? r.small : r.canvas, x0, y0, Math.round(x + size) - x0, Math.round(y + size) - y0);
+  }
+
+  if (S.grid) {
+    ctx.lineWidth = 1;
+    const line = (step, color) => {
+      ctx.strokeStyle = color; ctx.beginPath();
+      const wx0 = Math.floor((0 - ox) / s / step) * step, wz0 = Math.floor((0 - oy) / s / step) * step;
+      for (let wx = wx0; wx * s + ox < cw; wx += step) { const x = Math.round(wx * s + ox) + 0.5; ctx.moveTo(x, 0); ctx.lineTo(x, ch); }
+      for (let wz = wz0; wz * s + oy < ch; wz += step) { const y = Math.round(wz * s + oy) + 0.5; ctx.moveTo(0, y); ctx.lineTo(cw, y); }
+      ctx.stroke();
+    };
+    if (s >= 1.5) line(16, T.grid);
+    line(512, T['grid-strong']);
+  }
+
+  ctx.font = '600 12px "IBM Plex Sans", system-ui, sans-serif';
+  ctx.textBaseline = 'middle'; ctx.lineJoin = 'round';
+  const label = (text, x, y) => { ctx.lineWidth = 4; ctx.strokeStyle = T.halo; ctx.strokeText(text, x, y); ctx.fillStyle = T.ink; ctx.fillText(text, x, y); };
+  for (const p of d.players) {
+    const x = p.x * s + ox, y = p.z * s + oy;
+    if (x < -50 || y < -20 || x > cw + 50 || y > ch + 20) continue;
+    ctx.beginPath(); ctx.arc(x, y, 5, 0, Math.PI * 2);
+    ctx.fillStyle = T.accent; ctx.fill(); ctx.lineWidth = 2; ctx.strokeStyle = T.halo; ctx.stroke();
+    label(p.name, x + 9, y);
+  }
+  if (d.spawn) {
+    const x = d.spawn.x * s + ox, y = d.spawn.z * s + oy;
+    ctx.beginPath(); ctx.moveTo(x, y - 8); ctx.lineTo(x + 8, y); ctx.lineTo(x, y + 8); ctx.lineTo(x - 8, y); ctx.closePath();
+    ctx.fillStyle = T.marker; ctx.fill(); ctx.lineWidth = 2; ctx.strokeStyle = T.halo; ctx.stroke();
+    label('Spawn', x + 12, y);
+  }
+}
+
+function resize() {
+  const r = canvas.getBoundingClientRect();
+  dpr = window.devicePixelRatio || 1; cw = r.width; ch = r.height;
+  canvas.width = Math.round(cw * dpr); canvas.height = Math.round(ch * dpr);
+  draw();
+}
+new ResizeObserver(resize).observe($('#stage'));
+
+// ---- Status & readout ----
+function setStatusText(html) { $('#status-text').innerHTML = html; }
+function updateStatus() {
+  const d = S.cur; if (!d) return;
+  const total = d.files.length, busy = d.done < total;
+  $('#progress').hidden = !busy;
+  $('#progress-bar').style.width = (total ? (d.done / total) * 100 : 0) + '%';
+  $('#status-load').hidden = !S.sample;
+  if (S.sample) setStatusText(busy ? 'Generating sample terrain…' : '<strong>Sample terrain.</strong> Load your world to map it.');
+  else if (busy) setStatusText(`Mapping <strong>${esc(d.label)}</strong> · ${fmt(d.done)} of ${fmt(total)} regions`);
+  else setStatusText(`<strong>${esc(d.label)}</strong> · ${fmt(d.regions.size)} regions · ${fmt(d.chunks)} chunks`);
+  const w = [];
+  if (d.legacy) w.push(`${fmt(d.legacy)} chunks were saved before Minecraft 1.13 and can't be drawn. Open the world once in a newer version to convert them.`);
+  if (d.failed) w.push(`${fmt(d.failed)} region files couldn't be read.`);
+  if (d.external) w.push(`${fmt(d.external)} oversized chunks are stored in separate .mcc files and were skipped.`);
+  if (d.errors) w.push(`${fmt(d.errors)} damaged chunks were skipped.`);
+  $('#warnings').innerHTML = w.map(t => `<li>${t}</li>`).join('');
+}
+const esc = s => String(s).replace(/[&<>"]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
+
+function renderTabs() {
+  const el = $('#dims'); el.innerHTML = '';
+  el.hidden = S.dims.length < 2 && S.sample;
+  for (const d of S.dims) {
+    const b = document.createElement('button');
+    b.setAttribute('role', 'tab'); b.setAttribute('aria-selected', String(d === S.cur));
+    b.innerHTML = `${esc(d.label)} <span class="count">${fmt(d.files.length)}</span>`;
+    b.title = `${d.files.length} region files`;
+    b.onclick = () => selectDim(d);
+    el.appendChild(b);
+  }
+}
+
+function prettyBlock(full) {
+  const i = full.indexOf(':'), ns = i < 0 ? 'minecraft' : full.slice(0, i), n = i < 0 ? full : full.slice(i + 1);
+  const p = n.replace(/_/g, ' ').replace(/\b\w/g, m => m.toUpperCase());
+  return ns === 'minecraft' ? p : `${p} (${ns})`;
+}
+let lastPointer = null;
+function updateReadout() {
+  const d = S.cur;
+  if (!d || !lastPointer) return;
+  const { cx, cz, scale: s } = d.view;
+  const bx = Math.floor(cx + (lastPointer.x - cw / 2) / s), bz = Math.floor(cz + (lastPointer.y - ch / 2) / s);
+  const rx = Math.floor(bx / 512), rz = Math.floor(bz / 512);
+  $('#ro-x').textContent = bx; $('#ro-z').textContent = bz;
+  $('#ro-meta').textContent = `Chunk ${Math.floor(bx / 16)}, ${Math.floor(bz / 16)} · r.${rx}.${rz}.mca`;
+  const r = d.regions.get(rx + ',' + rz);
+  const i = (bz - rz * 512) * 512 + (bx - rx * 512);
+  if (!r || r.heights[i] === -32768) {
+    $('#ro-y').textContent = '—';
+    const f = d.files.find(f => f.rx === rx && f.rz === rz);
+    $('#ro-block').textContent = f && !f.done ? 'Still drawing…' : 'Not generated';
+    return;
+  }
+  $('#ro-y').textContent = r.heights[i];
+  const dep = r.depth[i];
+  $('#ro-block').textContent = prettyBlock(r.palette[r.blocks[i]]) + (dep ? (dep >= 48 ? ', 48+ blocks deep' : `, ${dep} block${dep > 1 ? 's' : ''} deep`) : '');
+}
+
+// ---- Pan & zoom ----
+const MIN_S = 1 / 32, MAX_S = 32;
+function zoomAt(sx, sy, ns) {
+  const v = S.cur && S.cur.view; if (!v) return;
+  ns = Math.min(MAX_S, Math.max(MIN_S, ns));
+  const wx = v.cx + (sx - cw / 2) / v.scale, wz = v.cz + (sy - ch / 2) / v.scale;
+  v.scale = ns; v.cx = wx - (sx - cw / 2) / ns; v.cz = wz - (sy - ch / 2) / ns;
+  updateZoomLabel(); updateReadout(); requestDraw();
+}
+function updateZoomLabel() {
+  const s = S.cur ? S.cur.view.scale : 1;
+  $('#zoom-label').textContent = s >= 1 ? `1 block = ${+s.toFixed(s < 10 ? 1 : 0)} px` : `1 px = ${+(1 / s).toFixed(1)} blocks`;
+}
+const pointers = new Map();
+canvas.addEventListener('pointerdown', e => {
+  canvas.setPointerCapture(e.pointerId);
+  pointers.set(e.pointerId, { x: e.offsetX, y: e.offsetY });
+  canvas.classList.add('dragging');
+});
+canvas.addEventListener('pointermove', e => {
+  const pt = { x: e.offsetX, y: e.offsetY };
+  if (e.pointerType === 'mouse' || pointers.size <= 1) lastPointer = pt;
+  const prev = pointers.get(e.pointerId);
+  const v = S.cur && S.cur.view;
+  if (prev && v) {
+    if (pointers.size === 1) {
+      v.cx -= (pt.x - prev.x) / v.scale; v.cz -= (pt.y - prev.y) / v.scale; requestDraw();
+    } else if (pointers.size === 2) {
+      const other = [...pointers].find(([id]) => id !== e.pointerId)[1];
+      const d0 = Math.hypot(prev.x - other.x, prev.y - other.y), d1 = Math.hypot(pt.x - other.x, pt.y - other.y);
+      const m0 = { x: (prev.x + other.x) / 2, y: (prev.y + other.y) / 2 }, m1 = { x: (pt.x + other.x) / 2, y: (pt.y + other.y) / 2 };
+      v.cx -= (m1.x - m0.x) / v.scale; v.cz -= (m1.y - m0.y) / v.scale;
+      if (d0 > 0) zoomAt(m1.x, m1.y, v.scale * d1 / d0);
+      requestDraw();
+    }
+    pointers.set(e.pointerId, pt);
+  }
+  updateReadout();
+});
+const endPointer = e => { pointers.delete(e.pointerId); if (!pointers.size) canvas.classList.remove('dragging'); };
+canvas.addEventListener('pointerup', endPointer);
+canvas.addEventListener('pointercancel', endPointer);
+canvas.addEventListener('wheel', e => {
+  e.preventDefault();
+  const v = S.cur && S.cur.view; if (!v) return;
+  const delta = e.deltaMode === 1 ? e.deltaY * 16 : e.deltaY;
+  zoomAt(e.offsetX, e.offsetY, v.scale * Math.exp(-delta * 0.0018));
+}, { passive: false });
+canvas.addEventListener('keydown', e => {
+  const v = S.cur && S.cur.view; if (!v) return;
+  const step = 80 / v.scale;
+  const keys = { ArrowLeft: [-step, 0], ArrowRight: [step, 0], ArrowUp: [0, -step], ArrowDown: [0, step] };
+  if (keys[e.key]) { v.cx += keys[e.key][0]; v.cz += keys[e.key][1]; requestDraw(); e.preventDefault(); }
+  else if (e.key === '+' || e.key === '=') zoomAt(cw / 2, ch / 2, v.scale * 1.5);
+  else if (e.key === '-') zoomAt(cw / 2, ch / 2, v.scale / 1.5);
+});
+$('#zoom-in').onclick = () => S.cur && zoomAt(cw / 2, ch / 2, S.cur.view.scale * 1.5);
+$('#zoom-out').onclick = () => S.cur && zoomAt(cw / 2, ch / 2, S.cur.view.scale / 1.5);
+$('#zoom-fit').onclick = () => {
+  const d = S.cur; if (!d || !d.files.length) return;
+  const src = d.regions.size ? [...d.regions.values()] : d.files;
+  const x0 = Math.min(...src.map(r => r.rx)) * 512, x1 = (Math.max(...src.map(r => r.rx)) + 1) * 512;
+  const z0 = Math.min(...src.map(r => r.rz)) * 512, z1 = (Math.max(...src.map(r => r.rz)) + 1) * 512;
+  d.view.cx = (x0 + x1) / 2; d.view.cz = (z0 + z1) / 2;
+  zoomAt(cw / 2, ch / 2, Math.min(cw / (x1 - x0), ch / (z1 - z0)) * 0.92);
+};
+$('#goto').addEventListener('submit', e => {
+  e.preventDefault();
+  const nums = $('#goto-input').value.match(/-?\d+(\.\d+)?/g);
+  if (!nums || nums.length < 2 || !S.cur) return;
+  const [x, z] = nums.length >= 3 ? [nums[0], nums[2]] : nums; // accept "X Y Z" too
+  S.cur.view.cx = +x + 0.5; S.cur.view.cz = +z + 0.5;
+  if (S.cur.view.scale < 2) S.cur.view.scale = 2;
+  updateZoomLabel(); requestDraw();
+});
+$('#btn-grid').onclick = e => { S.grid = !S.grid; e.currentTarget.setAttribute('aria-pressed', String(S.grid)); requestDraw(); };
+
+// ---- Sheets ----
+function openSheet(sel) { $(sel).hidden = false; const f = $(sel).querySelector('button'); f && f.focus(); }
+function closeSheet(sel) { $(sel).hidden = true; }
+for (const sel of ['#load-sheet', '#export-sheet']) $(sel).addEventListener('click', e => { if (e.target === e.currentTarget) closeSheet(sel); });
+document.addEventListener('keydown', e => { if (e.key === 'Escape') { closeSheet('#load-sheet'); closeSheet('#export-sheet'); } });
+$('#btn-load').onclick = $('#status-load').onclick = () => { $('#load-error').textContent = ''; openSheet('#load-sheet'); };
+$('#load-close').onclick = () => closeSheet('#load-sheet');
+$('#export-close').onclick = () => closeSheet('#export-sheet');
+$('#opt-folder').onclick = () => $('#pick-folder').click();
+$('#opt-zip').onclick = () => $('#pick-zip').click();
+$('#opt-regions').onclick = () => $('#pick-regions').click();
+$('#pick-folder').onchange = e => { const files = [...e.target.files]; e.target.value = ''; if (files.length) run(() => ingest(files.map(fileEntry))); };
+$('#pick-regions').onchange = e => { const files = [...e.target.files]; e.target.value = ''; if (files.length) run(() => ingest(files.map(fileEntry))); };
+$('#pick-zip').onchange = e => { const f = e.target.files[0]; e.target.value = ''; if (f) run(async () => ingest(await zipEntries(f))); };
+
+// ---- Drag and drop ----
+let dragDepth = 0;
+const hasFiles = e => e.dataTransfer && [...e.dataTransfer.types].includes('Files');
+window.addEventListener('dragenter', e => { if (!hasFiles(e)) return; e.preventDefault(); dragDepth++; $('#drop-hint').hidden = false; });
+window.addEventListener('dragover', e => { if (hasFiles(e)) e.preventDefault(); });
+window.addEventListener('dragleave', () => { dragDepth = Math.max(0, dragDepth - 1); if (!dragDepth) $('#drop-hint').hidden = true; });
+window.addEventListener('drop', e => {
+  if (!hasFiles(e)) return;
+  e.preventDefault(); dragDepth = 0; $('#drop-hint').hidden = true;
+  const items = [...e.dataTransfer.items].map(i => i.webkitGetAsEntry && i.webkitGetAsEntry()).filter(Boolean);
+  const loose = [...e.dataTransfer.files];
+  run(async () => {
+    if (items.length === 1 && items[0].isFile && /\.zip$/i.test(items[0].name)) return ingest(await zipEntries(loose[0]));
+    if (!items.length) return ingest(loose.map(fileEntry));
+    const out = [];
+    for (const it of items) await walk(it, out);
+    const zip = out.length === 1 && /\.zip$/i.test(out[0].path) ? out[0] : null;
+    return ingest(zip ? await zipEntries(zip.file) : out);
+  });
+});
+
+// ---- Export ----
+$('#btn-export').onclick = () => {
+  const d = S.cur; if (!d || !d.regions.size) return;
+  const rs = [...d.regions.values()];
+  const rx0 = Math.min(...rs.map(r => r.rx)), rx1 = Math.max(...rs.map(r => r.rx));
+  const rz0 = Math.min(...rs.map(r => r.rz)), rz1 = Math.max(...rs.map(r => r.rz));
+  const wb = (rx1 - rx0 + 1) * 512, hb = (rz1 - rz0 + 1) * 512;
+  const k = Math.min(1, 8192 / Math.max(wb, hb), Math.sqrt(48e6 / (wb * hb)));
+  const tile = Math.max(1, Math.floor(512 * k)), out = document.createElement('canvas');
+  out.width = (rx1 - rx0 + 1) * tile; out.height = (rz1 - rz0 + 1) * tile;
+  const oc = out.getContext('2d'); oc.imageSmoothingEnabled = tile < 512; oc.imageSmoothingQuality = 'high';
+  for (const r of rs) oc.drawImage(r.canvas, (r.rx - rx0) * tile, (r.rz - rz0) * tile, tile, tile);
+  out.toBlob(blob => {
+    const img = $('#export-img');
+    if (img.src) URL.revokeObjectURL(img.src);
+    img.src = URL.createObjectURL(blob);
+    const per = 512 / tile;
+    $('#export-info').textContent = `${d.label}, ${fmt(out.width)} × ${fmt(out.height)} px, ${per === 1 ? '1 pixel per block' : `1 pixel = ${+per.toFixed(2)} blocks`}. Covers X ${fmt(rx0 * 512)} to ${fmt(rx1 * 512 + 511)}, Z ${fmt(rz0 * 512)} to ${fmt(rz1 * 512 + 511)}.`;
+    const name = (($('#world-name').textContent || 'world') + ' ' + d.label).replace(/[^\w.-]+/g, '-').toLowerCase();
+    $('#export-download').onclick = () => { const a = document.createElement('a'); a.href = img.src; a.download = name + '.png'; a.click(); };
+    openSheet('#export-sheet');
+  }, 'image/png');
+};
+
+// ---- Boot ----
+readTheme();
+matchMedia('(prefers-color-scheme: dark)').addEventListener('change', readTheme);
+new MutationObserver(readTheme).observe(document.documentElement, { attributes: true, attributeFilter: ['data-theme'] });
+document.fonts && document.fonts.ready.then(requestDraw);
+resize();
+boot();
+})();
+</script>
+</body>
+</html>
