@@ -10,7 +10,7 @@ command -v node >/dev/null || { echo "Node.js is missing. Install it from https:
 [ -d "$SERVER" ] || { echo "Can't find the server folder at $SERVER"; exit 1; }
 
 if [ -d "$REPO_DIR/.git" ]; then git -C "$REPO_DIR" pull --quiet
-else git clone --quiet https://github.com/SchappiPlays/smp-map.git "$REPO_DIR"; fi
+else git clone --quiet https://github.com/LucasSchappi/smp-map.git "$REPO_DIR"; fi
 cd "$REPO_DIR"
 
 node build-map.mjs "$SERVER"
@@ -20,4 +20,4 @@ if git diff --cached --quiet; then echo "Map unchanged, nothing to publish."; ex
 git -c user.name="SMP map" -c user.email="smp-map@users.noreply.github.com" commit --quiet -m "Update map $(date '+%Y-%m-%d %H:%M')"
 if command -v gh >/dev/null; then gh auth status >/dev/null 2>&1 || gh auth login --web --git-protocol https; gh auth setup-git; fi
 git push --quiet
-echo "Published. The site updates in a minute or two: https://schappiplays.github.io/smp-map/"
+echo "Published. The site updates in a minute or two: https://lucasschappi.github.io/smp-map/"
